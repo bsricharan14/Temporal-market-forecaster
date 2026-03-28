@@ -1,0 +1,9 @@
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+
+DO $$
+BEGIN
+	IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pgml') THEN
+		CREATE EXTENSION IF NOT EXISTS pgml;
+	END IF;
+END
+$$;

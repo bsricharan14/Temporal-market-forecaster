@@ -1,19 +1,28 @@
 services:
-  timescaledb:
-    build: .
-    container_name: tmf-timescaledb
-    # THE MAGIC FIX: Keeps the container alive forever without running the dashboard
-    command: tail -f /dev/null 
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tmf-db
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb,pgml"]
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
-      - timescale_data:/var/lib/postgresql/data
+      - tmf_pg_data:/var/lib/postgresql/data
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
-# THIS IS THE MISSING PIECE:
 volumes:
-  timescale_data:
+  tmf_pg_data:
