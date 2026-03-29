@@ -1,4 +1,21 @@
-export default function CandlestickChart({ data, height = 280 }) {
+function formatXAxisLabel(value, timeframeLabel) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--";
+  }
+
+  if (timeframeLabel === "1d") {
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  if (timeframeLabel === "1m") {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+export default function CandlestickChart({ data, height = 280, timeframeLabel = "1m" }) {
   if (!data || data.length === 0) {
     return (
       <div className="chart-wrap chart-empty" style={{ height }}>
@@ -8,7 +25,7 @@ export default function CandlestickChart({ data, height = 280 }) {
   }
 
   const width = 960;
-  const padding = { top: 16, right: 12, bottom: 30, left: 54 };
+  const padding = { top: 16, right: 74, bottom: 38, left: 54 };
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
 
@@ -20,12 +37,15 @@ export default function CandlestickChart({ data, height = 280 }) {
 
   const y = (price) =>
     padding.top + innerHeight - ((price - minPrice) / range) * innerHeight;
-  const x = (index) => padding.left + (index / (data.length - 1 || 1)) * innerWidth;
-  const candleWidth = Math.max(4, innerWidth / data.length - 3);
+  const candleWidth = Math.max(2, innerWidth / Math.max(1, data.length));
+  const x = (index) => padding.left + candleWidth * index + candleWidth / 2;
+  const lastClose = data[data.length - 1].close;
+  const xLabelIndexes = [0, Math.floor(data.length / 3), Math.floor((data.length * 2) / 3), data.length - 1]
+    .filter((idx, i, arr) => arr.indexOf(idx) === i);
 
   return (
     <div className="chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label="Dummy candlestick chart">
+      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label="Live candlestick chart">
         {[0, 1, 2, 3, 4].map((mark) => {
           const price = minPrice + (range * mark) / 4;
           const yAxis = y(price);
@@ -45,6 +65,26 @@ export default function CandlestickChart({ data, height = 280 }) {
             </g>
           );
         })}
+
+        {xLabelIndexes.map((index) => (
+          <g key={`x-${index}`}>
+            <line
+              x1={x(index)}
+              x2={x(index)}
+              y1={height - padding.bottom}
+              y2={height - padding.bottom + 4}
+              className="chart-grid-line"
+            />
+            <text
+              x={x(index)}
+              y={height - 8}
+              textAnchor="middle"
+              className="chart-axis-label"
+            >
+              {formatXAxisLabel(data[index].bucket, timeframeLabel)}
+            </text>
+          </g>
+        ))}
 
         {data.map((point, index) => {
           const bullish = point.close >= point.open;
@@ -74,11 +114,29 @@ export default function CandlestickChart({ data, height = 280 }) {
 
         <line
           x1={padding.left}
-          x2={width - padding.right}
-          y1={y(data[data.length - 1].close)}
-          y2={y(data[data.length - 1].close)}
+          x2={width - padding.right + 2}
+          y1={y(lastClose)}
+          y2={y(lastClose)}
           className="last-price-line"
         />
+
+        <rect
+          x={width - padding.right + 6}
+          y={y(lastClose) - 10}
+          rx={5}
+          ry={5}
+          width={58}
+          height={20}
+          className="last-price-tag-bg"
+        />
+        <text
+          x={width - padding.right + 35}
+          y={y(lastClose) + 4}
+          textAnchor="middle"
+          className="last-price-tag-text"
+        >
+          {lastClose.toFixed(2)}
+        </text>
       </svg>
     </div>
   );

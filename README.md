@@ -129,9 +129,37 @@ Schema SQL location:
 
 From backend directory:
 
+Create a virtual environment (recommended and standard practice):
+
+```bash
+python -m venv .venv
+```
+
+Activate it:
+
+PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Bash:
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies and run API:
+
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+If you prefer not to activate the environment, run directly with its Python executable:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Backend URL:

@@ -12,8 +12,9 @@ async def market_stream(websocket: WebSocket, symbol: str):
     await simulation_manager.subscribe(normalized_symbol, websocket)
     try:
         while True:
-            # The frontend does not need to send data, but receiving here lets us detect disconnects.
-            await websocket.receive_text()
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
     except WebSocketDisconnect:
         pass
     finally:

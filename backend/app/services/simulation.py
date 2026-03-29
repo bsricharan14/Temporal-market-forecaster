@@ -21,7 +21,6 @@ class SymbolSimulationState:
     running: bool = False
     clients: set[WebSocket] = field(default_factory=set)
     task: asyncio.Task | None = None
-    tick_interval_seconds: float = 0.4
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     loaded_from_csv: bool = False
     last_price: float | None = None
@@ -189,6 +188,7 @@ class SimulationManager:
                 tick_to_insert = None
                 tick_payload = None
                 status_payload = None
+                sleep_duration = 0
 
                 async with state.lock:
                     if not state.running:
@@ -201,20 +201,27 @@ class SimulationManager:
                             "state": self._snapshot(state),
                         }
                     else:
-                        tick = state.source_ticks[state.index]
-                        state.last_price = tick["price"]
-                        tick_to_insert = tick
+                        current_tick = state.source_ticks[state.index]
+                        state.last_price = current_tick["price"]
+                        tick_to_insert = current_tick
                         tick_payload = {
                             "type": "tick",
                             "tick": {
-                                "time": tick["time"].isoformat(),
-                                "symbol": tick["symbol"],
-                                "price": tick["price"],
-                                "volume": tick["volume"],
+                                "time": current_tick["time"].isoformat(),
+                                "symbol": current_tick["symbol"],
+                                "price": current_tick["price"],
+                                "volume": current_tick["volume"],
                             },
                             "position": state.index + 1,
                             "total_ticks": len(state.source_ticks),
                         }
+                        
+                        # Calculate sleep duration based on time difference between ticks
+                        if state.index + 1 < len(state.source_ticks):
+                            next_tick = state.source_ticks[state.index + 1]
+                            time_diff = (next_tick["time"] - current_tick["time"]).total_seconds()
+                            sleep_duration = max(0.001, time_diff)  # Minimum 1ms to avoid spinning
+                        
                         state.index += 1
 
                 if status_payload is not None:
@@ -227,7 +234,8 @@ class SimulationManager:
                 if tick_payload is not None:
                     await self._broadcast(state, tick_payload)
 
-                await asyncio.sleep(state.tick_interval_seconds)
+                if sleep_duration > 0:
+                    await asyncio.sleep(sleep_duration)
         finally:
             async with state.lock:
                 state.task = None
