@@ -1,6 +1,6 @@
-import asyncio
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from app.services.simulation import simulation_manager
 
 router = APIRouter()
 
@@ -8,10 +8,13 @@ router = APIRouter()
 @router.websocket("/ws/stream/{symbol}")
 async def market_stream(websocket: WebSocket, symbol: str):
     await websocket.accept()
+    normalized_symbol = symbol.strip().upper()
+    await simulation_manager.subscribe(normalized_symbol, websocket)
     try:
         while True:
-            # Keep socket alive until real tick streaming is wired in.
-            await websocket.send_json({"symbol": symbol, "status": "connected"})
-            await asyncio.sleep(2)
+            # The frontend does not need to send data, but receiving here lets us detect disconnects.
+            await websocket.receive_text()
     except WebSocketDisconnect:
         pass
+    finally:
+        await simulation_manager.unsubscribe(normalized_symbol, websocket)

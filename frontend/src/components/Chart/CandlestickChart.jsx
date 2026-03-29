@@ -1,4 +1,12 @@
 export default function CandlestickChart({ data, height = 280 }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="chart-wrap chart-empty" style={{ height }}>
+        No tick data available for this symbol.
+      </div>
+    );
+  }
+
   const width = 960;
   const padding = { top: 16, right: 12, bottom: 30, left: 54 };
   const innerWidth = width - padding.left - padding.right;

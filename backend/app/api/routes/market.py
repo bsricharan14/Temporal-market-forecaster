@@ -3,8 +3,29 @@ from time import perf_counter
 from fastapi import APIRouter, Query
 
 from app.db.connection import get_connection_pool
+from app.services.simulation import simulation_manager
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+
+@router.get("/simulation/{symbol}/status")
+async def simulation_status(symbol: str):
+    return await simulation_manager.get_status(symbol)
+
+
+@router.post("/simulation/{symbol}/start")
+async def start_simulation(symbol: str):
+    return await simulation_manager.start(symbol, restart=False)
+
+
+@router.post("/simulation/{symbol}/stop")
+async def stop_simulation(symbol: str):
+    return await simulation_manager.stop(symbol)
+
+
+@router.post("/simulation/{symbol}/restart")
+async def restart_simulation(symbol: str):
+    return await simulation_manager.start(symbol, restart=True)
 
 
 @router.get("/ticks")

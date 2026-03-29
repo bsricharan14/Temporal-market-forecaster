@@ -209,6 +209,41 @@ body {
 	margin-bottom: 10px;
 }
 
+.simulation-controls {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-top: 10px;
+}
+
+.sim-btn {
+	border: 1px solid var(--line);
+	background: #152033;
+	color: var(--text-main);
+	border-radius: 10px;
+	padding: 7px 12px;
+	font: inherit;
+	font-size: 0.84rem;
+	cursor: pointer;
+	transition: transform 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.sim-btn:hover:not(:disabled) {
+	transform: translateY(-1px);
+	border-color: #4a6993;
+	background: #1d2a40;
+}
+
+.sim-btn:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.simulation-error {
+	color: var(--negative);
+}
+
 .toolbar-chip {
 	border: 1px solid var(--line);
 	background: #142037;
@@ -487,6 +522,15 @@ body {
 	border-radius: 12px;
 	overflow: hidden;
 	background: #0e141f;
+}
+
+.chart-empty {
+	display: grid;
+	place-items: center;
+	color: var(--text-muted);
+	font-size: 0.9rem;
+	font-family: "JetBrains Mono", "Consolas", monospace;
+	padding: 12px;
 }
 
 .chart-svg {

@@ -134,13 +134,7 @@ export default function App() {
 
   const currentPage = useMemo(() => {
     if (activePage === "charts") {
-      return (
-        <ChartsPage
-          selectedAsset={selectedAsset}
-          livePrice={livePrice}
-          candles={candles}
-        />
-      );
+      return <ChartsPage selectedAsset={selectedAsset} />;
     }
 
     if (activePage === "ml") {

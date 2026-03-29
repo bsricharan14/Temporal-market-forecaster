@@ -1,3 +1,6 @@
+import asyncio
+import sys
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,6 +8,10 @@ from app.api.routes.market import router as market_router
 from app.api.routes.predictions import router as predictions_router
 from app.api.websockets.stream import router as stream_router
 from app.db.connection import close_pool
+
+# Psycopg async connections on Windows require selector event loop policy.
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 app = FastAPI(title="Temporal Market Forecaster API", version="1.0.0")
 
