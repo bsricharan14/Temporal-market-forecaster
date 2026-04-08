@@ -47,3 +47,5 @@ frontend/.vite/
 *.temp
 tmp/
 temp/
+
+*.csv
