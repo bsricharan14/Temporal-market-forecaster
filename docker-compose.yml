@@ -7,6 +7,17 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
+    command: >
+      bash -c '
+      while ! su - postgres -c "pg_isready"; do sleep 1; done;
+      su - postgres -c "psql -c \"CREATE USER \\\"$$POSTGRES_USER\\\" WITH SUPERUSER PASSWORD '\''$$POSTGRES_PASSWORD'\'';\"" || true;
+      su - postgres -c "psql -c \"ALTER USER \\\"$$POSTGRES_USER\\\" WITH PASSWORD '\''$$POSTGRES_PASSWORD'\'';\"" || true;
+      su - postgres -c "psql -c \"CREATE DATABASE \\\"$$POSTGRES_DB\\\" OWNER \\\"$$POSTGRES_USER\\\";\"" || true;
+      su - postgres -c "psql -d \"$$POSTGRES_DB\" -c \"CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;\"" || true;
+      su - postgres -c "psql -d \"$$POSTGRES_DB\" -c \"CREATE EXTENSION IF NOT EXISTS pgml CASCADE;\"" || true;
+      su - postgres -c "psql -v ON_ERROR_STOP=1 -d \"$$POSTGRES_DB\" -f /schema/schema.sql" || true;
+      tail -f /dev/null
+      '
     environment:
       # Providing fallbacks just in case the .env doesn't load instantly
       POSTGRES_DB: ${DB_NAME:-market_db}
@@ -18,6 +29,7 @@ services:
       - tmf_pg_data:/var/lib/postgresql/data
       # This is the magic line. It runs your init scripts automatically!
       - ./docker/init:/docker-entrypoint-initdb.d:ro
+      - ./backend/sql/schema.sql:/schema/schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h localhost -U ${DB_USER:-user} -d ${DB_NAME:-market_db}"]
       interval: 10s

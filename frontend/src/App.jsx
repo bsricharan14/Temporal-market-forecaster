@@ -100,10 +100,52 @@ function buildPredictions(symbol) {
 export default function App() {
   const [activePage, setActivePage] = useState("dashboard");
   const [selectedSymbol, setSelectedSymbol] = useState(ASSETS[0].symbol);
+  const [availableSymbols, setAvailableSymbols] = useState([]);
+
+  const selectableAssets = useMemo(() => {
+    if (!availableSymbols.length) {
+      return ASSETS;
+    }
+    const filtered = ASSETS.filter((asset) => availableSymbols.includes(asset.symbol));
+    return filtered.length ? filtered : ASSETS;
+  }, [availableSymbols]);
+
   const selectedAsset = useMemo(
-    () => ASSETS.find((asset) => asset.symbol === selectedSymbol) ?? ASSETS[0],
-    [selectedSymbol],
+    () => selectableAssets.find((asset) => asset.symbol === selectedSymbol) ?? selectableAssets[0],
+    [selectedSymbol, selectableAssets],
   );
+
+  useEffect(() => {
+    let active = true;
+
+    const loadSymbols = async () => {
+      try {
+        const response = await fetch("/api/market/simulation/symbols");
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = await response.json();
+        if (!active) {
+          return;
+        }
+        setAvailableSymbols(Array.isArray(payload.symbols) ? payload.symbols : []);
+      } catch {
+        // Keep fallback asset list when API is unavailable.
+      }
+    };
+
+    loadSymbols();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectableAssets.find((asset) => asset.symbol === selectedSymbol)) {
+      setSelectedSymbol(selectableAssets[0].symbol);
+    }
+  }, [selectableAssets, selectedSymbol]);
 
   const [livePrice, setLivePrice] = useState(selectedAsset.basePrice);
 
@@ -134,13 +176,7 @@ export default function App() {
 
   const currentPage = useMemo(() => {
     if (activePage === "charts") {
-      return (
-        <ChartsPage
-          selectedAsset={selectedAsset}
-          livePrice={livePrice}
-          candles={candles}
-        />
-      );
+      return <ChartsPage selectedAsset={selectedAsset} />;
     }
 
     if (activePage === "ml") {
@@ -191,23 +227,25 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="asset-picker">
-          <label htmlFor="globalAssetSelect" className="asset-picker-label">
-            Asset
-          </label>
-          <select
-            id="globalAssetSelect"
-            className="symbol-select"
-            value={selectedSymbol}
-            onChange={(event) => setSelectedSymbol(event.target.value)}
-          >
-            {ASSETS.map((asset) => (
-              <option key={asset.symbol} value={asset.symbol}>
-                {asset.symbol} - {asset.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {activePage !== "charts" ? (
+          <div className="asset-picker">
+            <label htmlFor="globalAssetSelect" className="asset-picker-label">
+              Asset
+            </label>
+            <select
+              id="globalAssetSelect"
+              className="symbol-select"
+              value={selectedSymbol}
+              onChange={(event) => setSelectedSymbol(event.target.value)}
+            >
+              {selectableAssets.map((asset) => (
+                <option key={asset.symbol} value={asset.symbol}>
+                  {asset.symbol} - {asset.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
       </header>
 
       {currentPage}

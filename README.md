@@ -94,13 +94,72 @@ docker compose --env-file ./backend/.env down -v
 docker compose --env-file ./backend/.env up -d --build
 ```
 
+## 2.1) Create Schema and Import Tick CSV
+
+Generate CSV (symbol-based filename in tick data folder):
+
+```bash
+python "tick data/generate_ticks.py" AAPL --rows 250000
+```
+
+Apply schema and import into the running Docker Postgres container:
+
+```bash
+python backend/scripts/load_ticks_to_db.py AAPL
+```
+
+Note:
+
+- `backend/sql/schema.sql` is now also auto-applied when the DB container starts.
+- The Charts page `Start` button can ingest from `tick data/<SYMBOL>_ticks.csv` directly at runtime.
+- Use this script when you want to preload all rows immediately.
+
+Optional: load from a custom CSV path or skip schema re-apply.
+
+```bash
+python backend/scripts/load_ticks_to_db.py TSLA --csv "tick data/TSLA_ticks.csv"
+python backend/scripts/load_ticks_to_db.py TSLA --skip-schema
+```
+
+Schema SQL location:
+
+- backend/sql/schema.sql
+
 ## 3) Backend Setup (FastAPI)
 
 From backend directory:
 
+Create a virtual environment (recommended and standard practice):
+
+```bash
+python -m venv .venv
+```
+
+Activate it:
+
+PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Bash:
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies and run API:
+
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+If you prefer not to activate the environment, run directly with its Python executable:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Backend URL:

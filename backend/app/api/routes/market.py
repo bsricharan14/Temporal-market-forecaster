@@ -1,10 +1,46 @@
 from time import perf_counter
+from pathlib import Path
 
 from fastapi import APIRouter, Query
 
 from app.db.connection import get_connection_pool
+from app.services.simulation import simulation_manager
 
 router = APIRouter(prefix="/market", tags=["market"])
+TICK_DATA_DIR = Path(__file__).resolve().parents[4] / "tick data"
+
+
+@router.get("/simulation/symbols")
+async def simulation_symbols():
+    symbols: list[str] = []
+    if TICK_DATA_DIR.exists():
+        for file in TICK_DATA_DIR.glob("*_ticks.csv"):
+            symbol = file.stem.replace("_ticks", "").strip().upper()
+            if symbol:
+                symbols.append(symbol)
+
+    symbols = sorted(set(symbols))
+    return {"symbols": symbols}
+
+
+@router.get("/simulation/{symbol}/status")
+async def simulation_status(symbol: str):
+    return await simulation_manager.get_status(symbol)
+
+
+@router.post("/simulation/{symbol}/start")
+async def start_simulation(symbol: str):
+    return await simulation_manager.start(symbol, restart=False)
+
+
+@router.post("/simulation/{symbol}/stop")
+async def stop_simulation(symbol: str):
+    return await simulation_manager.stop(symbol)
+
+
+@router.post("/simulation/{symbol}/restart")
+async def restart_simulation(symbol: str):
+    return await simulation_manager.start(symbol, restart=True)
 
 
 @router.get("/ticks")
