@@ -278,7 +278,7 @@ body {
 
 .simulation-controls {
 	display: grid;
-	grid-template-columns: 1fr auto;
+	grid-template-columns: minmax(0, 1fr) minmax(220px, 320px) auto;
 	align-items: center;
 	gap: 16px;
 	flex-wrap: wrap;
@@ -301,6 +301,33 @@ body {
 	gap: 10px;
 	flex-wrap: wrap;
 	justify-content: flex-end;
+}
+
+.speed-control {
+	display: grid;
+	gap: 6px;
+	padding: 8px 10px;
+	border: 1px solid var(--line-soft);
+	border-radius: 10px;
+	background: #101a29;
+}
+
+.speed-control label {
+	font-family: "JetBrains Mono", "Consolas", monospace;
+	font-size: 0.76rem;
+	color: var(--text-muted);
+	letter-spacing: 0.02em;
+}
+
+.speed-control input[type="range"] {
+	width: 100%;
+	accent-color: #8ab5ff;
+	cursor: pointer;
+}
+
+.speed-control input[type="range"]:disabled {
+	cursor: not-allowed;
+	opacity: 0.65;
 }
 
 .chart-hero {
@@ -1024,6 +1051,10 @@ body {
 	.chart-controls-actions {
 		width: 100%;
 		justify-content: stretch;
+	}
+
+	.speed-control {
+		width: 100%;
 	}
 
 	.chart-controls-actions button {

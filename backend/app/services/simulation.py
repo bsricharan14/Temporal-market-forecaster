@@ -24,6 +24,7 @@ class SymbolSimulationState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     loaded_from_csv: bool = False
     last_price: float | None = None
+    speed_multiplier: float = 1.0
 
 
 class SimulationManager:
@@ -80,6 +81,13 @@ class SimulationManager:
                 await cur.execute("DELETE FROM market_ticks WHERE symbol = %s", (symbol,))
                 await cur.execute("DELETE FROM market_ticks_plain WHERE symbol = %s", (symbol,))
 
+    async def _clear_all_tick_data(self) -> None:
+        pool = await get_connection_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("TRUNCATE TABLE market_ticks")
+                await cur.execute("TRUNCATE TABLE market_ticks_plain")
+
     async def _insert_tick(self, tick: dict[str, Any]) -> None:
         pool = await get_connection_pool()
         args = (tick["time"], tick["symbol"], tick["price"], tick["volume"])
@@ -118,6 +126,7 @@ class SimulationManager:
             "total_ticks": len(state.source_ticks),
             "next_tick_time": next_tick["time"].isoformat() if next_tick else None,
             "last_price": state.last_price,
+            "speed_multiplier": state.speed_multiplier,
         }
 
     async def _broadcast(self, state: SymbolSimulationState, payload: dict[str, Any]) -> None:
@@ -157,7 +166,7 @@ class SimulationManager:
         async with state.lock:
             await self._ensure_source_ticks(state, force_reload=restart)
             if restart:
-                await self._clear_symbol_data(state.symbol)
+                await self._clear_all_tick_data()
                 state.index = 0
                 state.last_price = None
 
@@ -168,6 +177,15 @@ class SimulationManager:
             if state.task is None or state.task.done():
                 state.task = asyncio.create_task(self._run_simulation(state))
 
+            snapshot = self._snapshot(state)
+
+        await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
+        return snapshot
+
+    async def set_speed(self, symbol: str, speed_multiplier: float) -> dict[str, Any]:
+        state = await self._get_state(symbol)
+        async with state.lock:
+            state.speed_multiplier = max(0.1, min(speed_multiplier, 50.0))
             snapshot = self._snapshot(state)
 
         await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
@@ -220,7 +238,7 @@ class SimulationManager:
                         if state.index + 1 < len(state.source_ticks):
                             next_tick = state.source_ticks[state.index + 1]
                             time_diff = (next_tick["time"] - current_tick["time"]).total_seconds()
-                            sleep_duration = max(0.001, time_diff)  # Minimum 1ms to avoid spinning
+                            sleep_duration = max(0.001, time_diff / state.speed_multiplier)  # Minimum 1ms to avoid spinning
                         
                         state.index += 1
 

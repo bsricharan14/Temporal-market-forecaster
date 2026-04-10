@@ -21,6 +21,9 @@ const TIMEFRAME_OPTIONS = [
 ];
 
 const MAX_TICKS = 2500;
+const MIN_SPEED = 0.25;
+const MAX_SPEED = 20;
+const SPEED_STEP = 0.25;
 
 function wsBaseUrl() {
   const configured = import.meta.env.VITE_WS_URL;
@@ -112,6 +115,7 @@ export default function ChartsPage({ selectedAsset }) {
   const [socketStatus, setSocketStatus] = useState("connecting");
   const [errorMessage, setErrorMessage] = useState("");
   const [busyAction, setBusyAction] = useState("");
+  const [speedMultiplier, setSpeedMultiplier] = useState(1);
 
   useEffect(() => {
     setSelectedSymbol(selectedAsset.symbol);
@@ -196,6 +200,9 @@ export default function ChartsPage({ selectedAsset }) {
 
         setTicks(Array.isArray(fetchedTicks) ? fetchedTicks : []);
         setSimulationStatus(status.status ?? "stopped");
+        if (typeof status.speed_multiplier === "number") {
+          setSpeedMultiplier(status.speed_multiplier);
+        }
       } catch (error) {
         if (isMounted && error.name !== "AbortError") {
           setErrorMessage(error.message || "Unable to load chart data");
@@ -234,6 +241,9 @@ export default function ChartsPage({ selectedAsset }) {
 
         if (message.type === "simulation_state" && message.state?.status) {
           setSimulationStatus(message.state.status);
+          if (typeof message.state.speed_multiplier === "number") {
+            setSpeedMultiplier(message.state.speed_multiplier);
+          }
         }
       } catch {
         setErrorMessage("Received malformed simulation payload");
@@ -291,6 +301,30 @@ export default function ChartsPage({ selectedAsset }) {
     }
   };
 
+  const updateSimulationSpeed = async (nextSpeed) => {
+    setSpeedMultiplier(nextSpeed);
+    setErrorMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/market/simulation/${encodeURIComponent(symbol)}/speed?speed=${encodeURIComponent(nextSpeed)}`,
+        { method: "POST" },
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to update simulation speed");
+      }
+
+      const status = await response.json();
+      if (typeof status.speed_multiplier === "number") {
+        setSpeedMultiplier(status.speed_multiplier);
+      }
+      setSimulationStatus(status.status ?? "stopped");
+    } catch (error) {
+      setErrorMessage(error.message || "Unable to update simulation speed");
+    }
+  };
+
   return (
     <main className="page-shell">
       <header className="section-intro panel">
@@ -345,6 +379,32 @@ export default function ChartsPage({ selectedAsset }) {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="speed-control" aria-label="Simulation speed control">
+            <label htmlFor="simulationSpeedSlider">Speed {speedMultiplier.toFixed(2)}x</label>
+            <input
+              id="simulationSpeedSlider"
+              type="range"
+              min={MIN_SPEED}
+              max={MAX_SPEED}
+              step={SPEED_STEP}
+              value={speedMultiplier}
+              disabled={busyAction !== ""}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next)) {
+                  setSpeedMultiplier(next);
+                }
+              }}
+              onMouseUp={(event) => updateSimulationSpeed(Number(event.currentTarget.value))}
+              onTouchEnd={(event) => updateSimulationSpeed(Number(event.currentTarget.value))}
+              onKeyUp={(event) => {
+                if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
+                  updateSimulationSpeed(Number(event.currentTarget.value));
+                }
+              }}
+            />
           </div>
 
           <div className="chart-controls-actions">

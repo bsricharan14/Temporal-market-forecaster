@@ -43,6 +43,14 @@ async def restart_simulation(symbol: str):
     return await simulation_manager.start(symbol, restart=True)
 
 
+@router.post("/simulation/{symbol}/speed")
+async def set_simulation_speed(
+    symbol: str,
+    speed: float = Query(default=1.0, ge=0.25, le=20.0),
+):
+    return await simulation_manager.set_speed(symbol, speed)
+
+
 @router.get("/ticks")
 async def get_ticks(symbol: str = "AAPL", limit: int = Query(default=200, ge=1, le=5000)):
     pool = await get_connection_pool()
