@@ -31,6 +31,24 @@ class SimulationManager:
     def __init__(self):
         self._states: dict[str, SymbolSimulationState] = {}
         self._states_lock = asyncio.Lock()
+        self._all_symbol_clients: set[WebSocket] = set()
+
+    def _discover_symbols(self) -> list[str]:
+        symbols: set[str] = set()
+        if TICK_DATA_DIR.exists():
+            for file in TICK_DATA_DIR.glob("*_ticks.csv"):
+                symbol = file.stem.replace("_ticks", "").strip().upper()
+                if symbol:
+                    symbols.add(symbol)
+
+        return sorted(symbols)
+
+    async def _all_known_symbols(self) -> list[str]:
+        async with self._states_lock:
+            known = set(self._states.keys())
+
+        known.update(self._discover_symbols())
+        return sorted(known)
 
     async def _get_state(self, symbol: str) -> SymbolSimulationState:
         normalized = symbol.strip().upper()
@@ -140,6 +158,19 @@ class SimulationManager:
         for client in dead_clients:
             state.clients.discard(client)
 
+        await self._broadcast_all_clients(payload)
+
+    async def _broadcast_all_clients(self, payload: dict[str, Any]) -> None:
+        dead_clients: list[WebSocket] = []
+        for client in self._all_symbol_clients:
+            try:
+                await client.send_json(payload)
+            except Exception:
+                dead_clients.append(client)
+
+        for client in dead_clients:
+            self._all_symbol_clients.discard(client)
+
     async def subscribe(self, symbol: str, websocket: WebSocket) -> dict[str, Any]:
         state = await self._get_state(symbol)
         async with state.lock:
@@ -154,6 +185,30 @@ class SimulationManager:
         state = await self._get_state(symbol)
         async with state.lock:
             state.clients.discard(websocket)
+
+    async def subscribe_all(self, websocket: WebSocket) -> list[dict[str, Any]]:
+        self._all_symbol_clients.add(websocket)
+        snapshots: list[dict[str, Any]] = []
+        for symbol in self._discover_symbols():
+            state = await self._get_state(symbol)
+            async with state.lock:
+                await self._ensure_source_ticks(state)
+                snapshots.append(self._snapshot(state))
+
+        return snapshots
+
+    async def unsubscribe_all(self, websocket: WebSocket) -> None:
+        self._all_symbol_clients.discard(websocket)
+
+    async def get_all_statuses(self) -> list[dict[str, Any]]:
+        snapshots: list[dict[str, Any]] = []
+        for symbol in await self._all_known_symbols():
+            state = await self._get_state(symbol)
+            async with state.lock:
+                await self._ensure_source_ticks(state)
+                snapshots.append(self._snapshot(state))
+
+        return snapshots
 
     async def get_status(self, symbol: str) -> dict[str, Any]:
         state = await self._get_state(symbol)
@@ -182,6 +237,39 @@ class SimulationManager:
         await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
         return snapshot
 
+    async def start_all(self, *, restart: bool = False) -> list[dict[str, Any]]:
+        symbols = await self._all_known_symbols()
+        if restart:
+            await self._clear_all_tick_data()
+
+        snapshots: list[dict[str, Any]] = []
+        for symbol in symbols:
+            state = await self._get_state(symbol)
+            async with state.lock:
+                await self._ensure_source_ticks(state, force_reload=restart)
+                if restart:
+                    if state.task is not None and not state.task.done():
+                        state.task.cancel()
+                    state.task = None
+                    state.index = 0
+                    state.last_price = None
+
+                if not state.source_ticks:
+                    snapshot = self._snapshot(state)
+                    snapshots.append(snapshot)
+                    continue
+
+                state.running = True
+                if state.task is None or state.task.done():
+                    state.task = asyncio.create_task(self._run_simulation(state))
+
+                snapshot = self._snapshot(state)
+                snapshots.append(snapshot)
+
+            await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
+
+        return snapshots
+
     async def set_speed(self, symbol: str, speed_multiplier: float) -> dict[str, Any]:
         state = await self._get_state(symbol)
         async with state.lock:
@@ -191,6 +279,23 @@ class SimulationManager:
         await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
         return snapshot
 
+    async def set_speed_all(self, speed_multiplier: float) -> list[dict[str, Any]]:
+        symbols = await self._all_known_symbols()
+        next_speed = max(0.1, min(speed_multiplier, 50.0))
+        snapshots: list[dict[str, Any]] = []
+
+        for symbol in symbols:
+            state = await self._get_state(symbol)
+            async with state.lock:
+                await self._ensure_source_ticks(state)
+                state.speed_multiplier = next_speed
+                snapshot = self._snapshot(state)
+                snapshots.append(snapshot)
+
+            await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
+
+        return snapshots
+
     async def stop(self, symbol: str) -> dict[str, Any]:
         state = await self._get_state(symbol)
         async with state.lock:
@@ -199,6 +304,22 @@ class SimulationManager:
 
         await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
         return snapshot
+
+    async def stop_all(self) -> list[dict[str, Any]]:
+        symbols = await self._all_known_symbols()
+        snapshots: list[dict[str, Any]] = []
+
+        for symbol in symbols:
+            state = await self._get_state(symbol)
+            async with state.lock:
+                await self._ensure_source_ticks(state)
+                state.running = False
+                snapshot = self._snapshot(state)
+                snapshots.append(snapshot)
+
+            await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
+
+        return snapshots
 
     async def _run_simulation(self, state: SymbolSimulationState) -> None:
         try:

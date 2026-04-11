@@ -25,9 +25,11 @@ export default function Dashboard({
   livePrice,
   candles,
   predictions,
+  simulationControls,
 }) {
   const movement = formatDelta(selectedAsset.basePrice, livePrice);
   const movementTone = movement.change >= 0 ? "positive" : "negative";
+  const busyAction = simulationControls?.busyAction ?? "";
 
   return (
     <main className="page-shell">
@@ -37,6 +39,34 @@ export default function Dashboard({
         <p className="subline">
           Live mock pricing with reusable cards, chart, predictions, and watchlist.
         </p>
+
+        <div className="chart-controls-actions">
+          <button
+            className="sim-btn"
+            disabled={busyAction !== ""}
+            onClick={() => simulationControls?.runAction?.("start")}
+          >
+            {busyAction === "start" ? "Starting..." : "Start"}
+          </button>
+          <button
+            className="sim-btn"
+            disabled={busyAction !== ""}
+            onClick={() => simulationControls?.runAction?.("stop")}
+          >
+            {busyAction === "stop" ? "Stopping..." : "Stop"}
+          </button>
+          <button
+            className="sim-btn"
+            disabled={busyAction !== ""}
+            onClick={() => simulationControls?.runAction?.("restart")}
+          >
+            {busyAction === "restart" ? "Restarting..." : "Restart"}
+          </button>
+        </div>
+
+        {simulationControls?.errorMessage ? (
+          <p className="subline simulation-error">{simulationControls.errorMessage}</p>
+        ) : null}
       </header>
 
       <section className="stats-grid">

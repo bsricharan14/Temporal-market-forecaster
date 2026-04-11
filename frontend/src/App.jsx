@@ -101,6 +101,8 @@ export default function App() {
   const [activePage, setActivePage] = useState("dashboard");
   const [selectedSymbol, setSelectedSymbol] = useState(ASSETS[0].symbol);
   const [availableSymbols, setAvailableSymbols] = useState([]);
+  const [globalBusyAction, setGlobalBusyAction] = useState("");
+  const [globalSimulationError, setGlobalSimulationError] = useState("");
 
   const selectableAssets = useMemo(() => {
     if (!availableSymbols.length) {
@@ -174,41 +176,25 @@ export default function App() {
     [selectedAsset.symbol],
   );
 
-  const currentPage = useMemo(() => {
-    if (activePage === "charts") {
-      return <ChartsPage selectedAsset={selectedAsset} />;
+  const runGlobalSimulationAction = async (action) => {
+    if (!action) {
+      return;
     }
 
-    if (activePage === "ml") {
-      return (
-        <MlPredictionsPage
-          selectedAsset={selectedAsset}
-          predictions={predictions}
-        />
-      );
-    }
+    setGlobalBusyAction(action);
+    setGlobalSimulationError("");
 
-    if (activePage === "benchmark") {
-      return <BenchmarkPage selectedAsset={selectedAsset} />;
+    try {
+      const response = await fetch(`/api/market/simulation/${action}`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(`Unable to ${action} simulation`);
+      }
+    } catch (error) {
+      setGlobalSimulationError(error.message || "Simulation command failed");
+    } finally {
+      setGlobalBusyAction("");
     }
-
-    return (
-      <Dashboard
-        assets={ASSETS}
-        selectedAsset={selectedAsset}
-        onSymbolChange={setSelectedSymbol}
-        livePrice={livePrice}
-        candles={candles}
-        predictions={predictions}
-      />
-    );
-  }, [
-    activePage,
-    candles,
-    livePrice,
-    predictions,
-    selectedAsset,
-  ]);
+  };
 
   return (
     <div className="app-shell">
@@ -226,29 +212,52 @@ export default function App() {
             </button>
           ))}
         </nav>
-
-        {activePage !== "charts" ? (
-          <div className="asset-picker">
-            <label htmlFor="globalAssetSelect" className="asset-picker-label">
-              Asset
-            </label>
-            <select
-              id="globalAssetSelect"
-              className="symbol-select"
-              value={selectedSymbol}
-              onChange={(event) => setSelectedSymbol(event.target.value)}
-            >
-              {selectableAssets.map((asset) => (
-                <option key={asset.symbol} value={asset.symbol}>
-                  {asset.symbol} - {asset.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : null}
       </header>
 
-      {currentPage}
+      <div style={{ display: activePage === "dashboard" ? "block" : "none" }}>
+        <Dashboard
+          assets={ASSETS}
+          selectedAsset={selectedAsset}
+          onSymbolChange={setSelectedSymbol}
+          livePrice={livePrice}
+          candles={candles}
+          predictions={predictions}
+          simulationControls={{
+            busyAction: globalBusyAction,
+            errorMessage: globalSimulationError,
+            runAction: runGlobalSimulationAction,
+          }}
+        />
+      </div>
+
+      <div style={{ display: activePage === "charts" ? "block" : "none" }}>
+        <ChartsPage
+          selectedAsset={selectedAsset}
+          simulationControls={{
+            busyAction: globalBusyAction,
+            errorMessage: globalSimulationError,
+            runAction: runGlobalSimulationAction,
+          }}
+        />
+      </div>
+
+      <div style={{ display: activePage === "ml" ? "block" : "none" }}>
+        <MlPredictionsPage
+          selectedAsset={selectedAsset}
+          predictions={predictions}
+        />
+      </div>
+
+      <div style={{ display: activePage === "benchmark" ? "block" : "none" }}>
+        <BenchmarkPage
+          selectedAsset={selectedAsset}
+          simulationControls={{
+            busyAction: globalBusyAction,
+            errorMessage: globalSimulationError,
+            runAction: runGlobalSimulationAction,
+          }}
+        />
+      </div>
     </div>
   );
 }

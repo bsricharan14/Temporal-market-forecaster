@@ -152,21 +152,6 @@ body {
 	outline-offset: 2px;
 }
 
-.asset-picker {
-	display: flex;
-	align-items: center;
-	justify-content: flex-end;
-	gap: 10px;
-	flex-wrap: nowrap;
-}
-
-.asset-picker-label {
-	margin: 0;
-	color: var(--text-muted);
-	font-size: 0.85rem;
-	font-weight: 500;
-	white-space: nowrap;
-}
 
 .section-intro {
 	display: grid;
@@ -493,6 +478,11 @@ body {
 	font-size: 0.85rem;
 	font-weight: 600;
 	text-align: right;
+	min-width: 0;
+	max-width: 48%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .model-registry {
@@ -544,6 +534,53 @@ body {
 .benchmark-table {
 	display: grid;
 	gap: 14px;
+}
+
+.benchmark-matrix-wrap {
+	overflow-x: auto;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	background: #121b2a;
+}
+
+.benchmark-matrix {
+	width: 100%;
+	border-collapse: collapse;
+	min-width: 760px;
+}
+
+.benchmark-matrix th,
+.benchmark-matrix td {
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--line-soft);
+	text-align: left;
+	font-size: 0.83rem;
+	white-space: nowrap;
+}
+
+.benchmark-matrix th {
+	font-size: 0.74rem;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--text-dim);
+	font-family: "JetBrains Mono", "Consolas", monospace;
+	background: #162236;
+	position: sticky;
+	top: 0;
+	z-index: 1;
+}
+
+.benchmark-matrix tbody tr:hover {
+	background: #1a2941;
+}
+
+.benchmark-matrix tbody tr:last-child td {
+	border-bottom: none;
+}
+
+.benchmark-rows-meta {
+	color: var(--text-dim);
+	font-family: "JetBrains Mono", "Consolas", monospace;
 }
 
 .benchmark-row {
@@ -736,7 +773,8 @@ body {
 .chart-wrap {
 	border: 1px solid var(--line);
 	border-radius: 12px;
-	overflow: hidden;
+	overflow-x: auto;
+	overflow-y: hidden;
 	background: #0e141f;
 }
 
@@ -750,7 +788,8 @@ body {
 }
 
 .chart-svg {
-	width: 100%;
+	min-width: 100%;
+	height: auto;
 	display: block;
 }
 
@@ -954,9 +993,6 @@ body {
 		gap: 6px;
 	}
 
-	.asset-picker {
-		justify-content: flex-end;
-	}
 
 	.stats-grid {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -982,10 +1018,6 @@ body {
 		width: auto;
 	}
 
-	.asset-picker {
-		align-items: center;
-		justify-content: flex-end;
-	}
 
 	.section-intro {
 		padding: 16px;
