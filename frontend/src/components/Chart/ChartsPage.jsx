@@ -21,6 +21,16 @@ const TIMEFRAME_OPTIONS = [
 ];
 
 const MAX_TICKS = 2500;
+const MIN_SPEED = 0.25;
+const MAX_SPEED = 20;
+const SPEED_STEP = 0.25;
+
+function formatCompactNumber(value) {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
 
 function wsBaseUrl() {
   const configured = import.meta.env.VITE_WS_URL;
@@ -29,7 +39,11 @@ function wsBaseUrl() {
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//localhost:8000`;
+  return `${protocol}//${window.location.host}`;
+}
+
+function wsStreamUrl() {
+  return `${wsBaseUrl()}/ws/stream`;
 }
 
 function formatTimestamp(value) {
@@ -47,7 +61,7 @@ function formatTimestamp(value) {
   });
 }
 
-function buildCandlesFromTicks(ticks, timeframeMinutes, maxCandles) {
+function buildCandlesFromTicks(ticks, timeframeMinutes) {
   if (!ticks.length) {
     return [];
   }
@@ -86,9 +100,10 @@ function buildCandlesFromTicks(ticks, timeframeMinutes, maxCandles) {
     existing.volume += volume;
   }
 
-  return Array.from(buckets.values())
-    .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime())
-    .slice(-maxCandles)
+  const candleSeries = Array.from(buckets.values())
+    .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime());
+
+  return candleSeries
     .map((item, index) => ({ ...item, index }));
 }
 
@@ -103,15 +118,16 @@ function fallbackCandles(basePrice) {
   }));
 }
 
-export default function ChartsPage({ selectedAsset }) {
+export default function ChartsPage({ selectedAsset, simulationControls }) {
   const [availableSymbols, setAvailableSymbols] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState(selectedAsset.symbol);
   const [timeframe, setTimeframe] = useState(TIMEFRAME_OPTIONS[0]);
-  const [ticks, setTicks] = useState([]);
-  const [simulationStatus, setSimulationStatus] = useState("loading");
+  const [ticksBySymbol, setTicksBySymbol] = useState({});
+  const [statusBySymbol, setStatusBySymbol] = useState({});
+  const [speedBySymbol, setSpeedBySymbol] = useState({});
   const [socketStatus, setSocketStatus] = useState("connecting");
   const [errorMessage, setErrorMessage] = useState("");
-  const [busyAction, setBusyAction] = useState("");
+  const [speedMultiplier, setSpeedMultiplier] = useState(1);
 
   useEffect(() => {
     setSelectedSymbol(selectedAsset.symbol);
@@ -151,9 +167,12 @@ export default function ChartsPage({ selectedAsset }) {
   }, []);
 
   const symbol = selectedSymbol;
+  const ticks = ticksBySymbol[symbol] ?? [];
+  const simulationStatus = statusBySymbol[symbol] ?? "loading";
+  const busyAction = simulationControls?.busyAction ?? "";
 
   const candles = useMemo(
-    () => buildCandlesFromTicks(ticks, timeframe.minutes, timeframe.maxCandles),
+    () => buildCandlesFromTicks(ticks, timeframe.minutes),
     [ticks, timeframe],
   );
   const chartCandles = candles.length ? candles : fallbackCandles(selectedAsset.basePrice);
@@ -164,38 +183,63 @@ export default function ChartsPage({ selectedAsset }) {
   const trendTone = livePrice >= selectedAsset.basePrice ? "positive" : "negative";
 
   useEffect(() => {
+    if (!availableSymbols.length) {
+      return;
+    }
+
     const controller = new AbortController();
     let isMounted = true;
 
-    const loadInitialData = async () => {
+    const loadInitialDataForAllSymbols = async () => {
       setErrorMessage("");
-      setSocketStatus("connecting");
       try {
-        const [ticksResponse, statusResponse] = await Promise.all([
-          fetch(`/api/market/ticks?symbol=${encodeURIComponent(symbol)}&limit=${MAX_TICKS}`, {
-            signal: controller.signal,
-          }),
-          fetch(`/api/market/simulation/${encodeURIComponent(symbol)}/status`, {
-            signal: controller.signal,
-          }),
-        ]);
+        const responses = await Promise.all(
+          availableSymbols.map(async (currentSymbol) => {
+            const [ticksResponse, statusResponse] = await Promise.all([
+              fetch(`/api/market/ticks?symbol=${encodeURIComponent(currentSymbol)}&limit=${MAX_TICKS}`, {
+                signal: controller.signal,
+              }),
+              fetch(`/api/market/simulation/${encodeURIComponent(currentSymbol)}/status`, {
+                signal: controller.signal,
+              }),
+            ]);
 
-        if (!ticksResponse.ok) {
-          throw new Error("Failed to fetch ticks");
-        }
-        if (!statusResponse.ok) {
-          throw new Error("Failed to fetch simulation status");
-        }
+            if (!ticksResponse.ok) {
+              throw new Error(`Failed to fetch ticks for ${currentSymbol}`);
+            }
+            if (!statusResponse.ok) {
+              throw new Error(`Failed to fetch simulation status for ${currentSymbol}`);
+            }
 
-        const fetchedTicks = await ticksResponse.json();
-        const status = await statusResponse.json();
+            const fetchedTicks = await ticksResponse.json();
+            const status = await statusResponse.json();
+            return {
+              symbol: currentSymbol,
+              ticks: Array.isArray(fetchedTicks) ? fetchedTicks : [],
+              status,
+            };
+          }),
+        );
 
         if (!isMounted) {
           return;
         }
 
-        setTicks(Array.isArray(fetchedTicks) ? fetchedTicks : []);
-        setSimulationStatus(status.status ?? "stopped");
+        const nextTicksBySymbol = {};
+        const nextStatusBySymbol = {};
+        const nextSpeedBySymbol = {};
+
+        for (const item of responses) {
+          nextTicksBySymbol[item.symbol] = item.ticks;
+          nextStatusBySymbol[item.symbol] = item.status.status ?? "stopped";
+          if (typeof item.status.speed_multiplier === "number") {
+            nextSpeedBySymbol[item.symbol] = item.status.speed_multiplier;
+          }
+        }
+
+        setTicksBySymbol(nextTicksBySymbol);
+        setStatusBySymbol(nextStatusBySymbol);
+        setSpeedBySymbol(nextSpeedBySymbol);
       } catch (error) {
         if (isMounted && error.name !== "AbortError") {
           setErrorMessage(error.message || "Unable to load chart data");
@@ -203,91 +247,161 @@ export default function ChartsPage({ selectedAsset }) {
       }
     };
 
-    loadInitialData();
+    loadInitialDataForAllSymbols();
 
     return () => {
       isMounted = false;
       controller.abort();
     };
-  }, [symbol]);
+  }, [availableSymbols]);
+
+  useEffect(() => {
+    const speed = speedBySymbol[symbol];
+    if (typeof speed === "number") {
+      setSpeedMultiplier(speed);
+    }
+  }, [symbol, speedBySymbol]);
 
   useEffect(() => {
     let active = true;
-    const socket = new WebSocket(`${wsBaseUrl()}/ws/stream/${encodeURIComponent(symbol)}`);
+    let reconnectTimeout = null;
+    let socket = null;
 
-    socket.onopen = () => {
+    const connect = () => {
       if (!active) {
         return;
       }
-      setSocketStatus("connected");
-      setErrorMessage("");
-    };
 
-    socket.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
+      setSocketStatus("connecting");
+      socket = new WebSocket(wsStreamUrl());
 
-        if (message.type === "tick" && message.tick) {
-          setTicks((previous) => [...previous, message.tick].slice(-MAX_TICKS));
+      socket.onopen = () => {
+        if (!active) {
+          socket.close();
+          return;
+        }
+        setSocketStatus("connected");
+        setErrorMessage("");
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          if (message.type === "tick" && message.tick) {
+            const tickSymbol = message.tick.symbol;
+            if (!tickSymbol) {
+              return;
+            }
+
+            setTicksBySymbol((previous) => {
+              const previousTicks = previous[tickSymbol] ?? [];
+              return {
+                ...previous,
+                [tickSymbol]: [...previousTicks, message.tick],
+              };
+            });
+            return;
+          }
+
+          if (message.type === "simulation_state" && message.state?.status) {
+            const stateSymbol = message.state.symbol;
+            if (!stateSymbol) {
+              return;
+            }
+
+            setStatusBySymbol((previous) => ({
+              ...previous,
+              [stateSymbol]: message.state.status,
+            }));
+
+            if (typeof message.state.speed_multiplier === "number") {
+              setSpeedBySymbol((previous) => ({
+                ...previous,
+                [stateSymbol]: message.state.speed_multiplier,
+              }));
+            }
+          }
+        } catch {
+          setErrorMessage("Received malformed simulation payload");
+        }
+      };
+
+      socket.onerror = () => {
+        if (!active) {
+          return;
+        }
+        setSocketStatus("error");
+      };
+
+      socket.onclose = (event) => {
+        if (!active) {
           return;
         }
 
-        if (message.type === "simulation_state" && message.state?.status) {
-          setSimulationStatus(message.state.status);
+        setSocketStatus("disconnected");
+        if (!event.wasClean && event.code !== 1000 && event.code !== 1001) {
+          setErrorMessage("Live stream disconnected. Retrying...");
         }
-      } catch {
-        setErrorMessage("Received malformed simulation payload");
-      }
+
+        reconnectTimeout = window.setTimeout(connect, 1200);
+      };
     };
 
-    socket.onerror = () => {
-      if (!active) {
-        return;
-      }
-      setSocketStatus("error");
-      setErrorMessage("Unable to connect to live stream");
-    };
-
-    socket.onclose = (event) => {
-      if (!active) {
-        return;
-      }
-      setSocketStatus("disconnected");
-      if (!event.wasClean && event.code !== 1000 && event.code !== 1001) {
-        setErrorMessage("Live stream disconnected unexpectedly");
-      }
-    };
+    connect();
 
     return () => {
       active = false;
-      socket.close();
-    };
-  }, [symbol]);
+      if (reconnectTimeout !== null) {
+        window.clearTimeout(reconnectTimeout);
+      }
 
-  const runSimulationAction = async (action) => {
-    setBusyAction(action);
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        socket.close();
+      }
+    };
+  }, []);
+
+  const updateSimulationSpeed = async (nextSpeed) => {
+    setSpeedMultiplier(nextSpeed);
     setErrorMessage("");
 
     try {
       const response = await fetch(
-        `/api/market/simulation/${encodeURIComponent(symbol)}/${action}`,
+        `/api/market/simulation/speed?speed=${encodeURIComponent(nextSpeed)}`,
         { method: "POST" },
       );
 
       if (!response.ok) {
-        throw new Error(`Unable to ${action} simulation`);
+        throw new Error("Unable to update simulation speed");
       }
 
-      const status = await response.json();
-      setSimulationStatus(status.status ?? "stopped");
+      const payload = await response.json();
+      const states = Array.isArray(payload.states) ? payload.states : [];
 
-      if (action === "restart") {
-        setTicks([]);
+      if (states.length) {
+        setStatusBySymbol((previous) => {
+          const next = { ...previous };
+          for (const state of states) {
+            if (state?.symbol) {
+              next[state.symbol] = state.status ?? "stopped";
+            }
+          }
+          return next;
+        });
+
+        setSpeedBySymbol((previous) => {
+          const next = { ...previous };
+          for (const state of states) {
+            if (state?.symbol && typeof state.speed_multiplier === "number") {
+              next[state.symbol] = state.speed_multiplier;
+            }
+          }
+          return next;
+        });
       }
     } catch (error) {
-      setErrorMessage(error.message || "Simulation command failed");
-    } finally {
-      setBusyAction("");
+      setErrorMessage(error.message || "Unable to update simulation speed");
     }
   };
 
@@ -313,7 +427,7 @@ export default function ChartsPage({ selectedAsset }) {
           </label>
         </div>
         <p className="subline">
-          Candles are built from ingested ticks in real time. Stop pauses, Start resumes, Restart clears symbol data and re-ingests.
+          Candles are built from ingested ticks in real time. Stop pauses, Start resumes, Restart clears all table data and re-ingests.
         </p>
 
         <div className="chart-hero">
@@ -347,32 +461,63 @@ export default function ChartsPage({ selectedAsset }) {
             </div>
           </div>
 
+          <div className="speed-control" aria-label="Simulation speed control">
+            <label htmlFor="simulationSpeedSlider">Speed {speedMultiplier.toFixed(2)}x</label>
+            <input
+              id="simulationSpeedSlider"
+              type="range"
+              min={MIN_SPEED}
+              max={MAX_SPEED}
+              step={SPEED_STEP}
+              value={speedMultiplier}
+              disabled={busyAction !== ""}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next)) {
+                  setSpeedMultiplier(next);
+                }
+              }}
+              onMouseUp={(event) => updateSimulationSpeed(Number(event.currentTarget.value))}
+              onTouchEnd={(event) => updateSimulationSpeed(Number(event.currentTarget.value))}
+              onKeyUp={(event) => {
+                if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
+                  updateSimulationSpeed(Number(event.currentTarget.value));
+                }
+              }}
+            />
+          </div>
+
           <div className="chart-controls-actions">
             <button
               className="sim-btn"
               disabled={busyAction !== ""}
-              onClick={() => runSimulationAction("start")}
+              onClick={() => simulationControls?.runAction?.("start")}
             >
               {busyAction === "start" ? "Starting..." : "Start"}
             </button>
             <button
               className="sim-btn"
               disabled={busyAction !== ""}
-              onClick={() => runSimulationAction("stop")}
+              onClick={() => simulationControls?.runAction?.("stop")}
             >
               {busyAction === "stop" ? "Stopping..." : "Stop"}
             </button>
             <button
               className="sim-btn"
               disabled={busyAction !== ""}
-              onClick={() => runSimulationAction("restart")}
+              onClick={() => {
+                setTicksBySymbol({});
+                simulationControls?.runAction?.("restart");
+              }}
             >
               {busyAction === "restart" ? "Restarting..." : "Restart"}
             </button>
           </div>
         </div>
 
-        {errorMessage ? <p className="subline simulation-error">{errorMessage}</p> : null}
+        {errorMessage || simulationControls?.errorMessage ? (
+          <p className="subline simulation-error">{errorMessage || simulationControls.errorMessage}</p>
+        ) : null}
       </header>
 
       <section className="charts-main-section">
@@ -419,9 +564,15 @@ export default function ChartsPage({ selectedAsset }) {
               <div>
                 <span>Total Volume</span>
                 <strong>
-                  {new Intl.NumberFormat("en-US").format(
-                    chartCandles.reduce((sum, point) => sum + point.volume, 0),
-                  )}
+                  <span
+                    title={new Intl.NumberFormat("en-US").format(
+                      chartCandles.reduce((sum, point) => sum + point.volume, 0),
+                    )}
+                  >
+                    {formatCompactNumber(
+                      chartCandles.reduce((sum, point) => sum + point.volume, 0),
+                    )}
+                  </span>
                 </strong>
               </div>
               <div>

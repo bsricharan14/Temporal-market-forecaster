@@ -24,28 +24,45 @@ export default function CandlestickChart({ data, height = 280, timeframeLabel = 
     );
   }
 
-  const width = 960;
+  const baseWidth = 960;
+  const maxCandlesBeforeScroll = 140;
   const padding = { top: 16, right: 74, bottom: 38, left: 54 };
+  const baseInnerWidth = baseWidth - padding.left - padding.right;
+  const stepAtBound = baseInnerWidth / maxCandlesBeforeScroll;
+  const overflowCandles = Math.max(0, data.length - maxCandlesBeforeScroll);
+  const width = Math.round(baseWidth + overflowCandles * stepAtBound);
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
 
   const lows = data.map((point) => point.low);
   const highs = data.map((point) => point.high);
-  const minPrice = Math.min(...lows);
-  const maxPrice = Math.max(...highs);
+  const rawMinPrice = Math.min(...lows);
+  const rawMaxPrice = Math.max(...highs);
+  const rawRange = rawMaxPrice - rawMinPrice;
+  const yPadding = rawRange > 0 ? rawRange * 0.08 : Math.max(0.1, Math.abs(rawMinPrice) * 0.004);
+  const minPrice = rawMinPrice - yPadding;
+  const maxPrice = rawMaxPrice + yPadding;
   const range = maxPrice - minPrice || 1;
 
   const y = (price) =>
     padding.top + innerHeight - ((price - minPrice) / range) * innerHeight;
-  const candleWidth = Math.max(2, innerWidth / Math.max(1, data.length));
-  const x = (index) => padding.left + candleWidth * index + candleWidth / 2;
+  const candleStep = innerWidth / Math.max(1, data.length);
+  const candleBodyWidth = Math.max(1, candleStep + 0.75);
+  const x = (index) => padding.left + candleStep * index + candleStep / 2;
   const lastClose = data[data.length - 1].close;
   const xLabelIndexes = [0, Math.floor(data.length / 3), Math.floor((data.length * 2) / 3), data.length - 1]
     .filter((idx, i, arr) => arr.indexOf(idx) === i);
 
   return (
     <div className="chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label="Live candlestick chart">
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        className="chart-svg"
+        role="img"
+        aria-label="Live candlestick chart"
+      >
         {[0, 1, 2, 3, 4].map((mark) => {
           const price = minPrice + (range * mark) / 4;
           const yAxis = y(price);
@@ -91,9 +108,10 @@ export default function CandlestickChart({ data, height = 280, timeframeLabel = 
           const top = y(Math.max(point.open, point.close));
           const bottom = y(Math.min(point.open, point.close));
           const bodyHeight = Math.max(1.5, bottom - top);
+          const bodyX = padding.left + candleStep * index - 0.375;
 
           return (
-            <g key={`${point.index}-${index}`}>
+            <g key={point.bucket ?? `${point.index}-${index}`}>
               <line
                 x1={x(index)}
                 x2={x(index)}
@@ -102,9 +120,9 @@ export default function CandlestickChart({ data, height = 280, timeframeLabel = 
                 className={bullish ? "wick-positive" : "wick-negative"}
               />
               <rect
-                x={x(index) - candleWidth / 2}
+                x={bodyX}
                 y={top}
-                width={candleWidth}
+                width={candleBodyWidth}
                 height={bodyHeight}
                 className={bullish ? "candle-positive" : "candle-negative"}
               />
