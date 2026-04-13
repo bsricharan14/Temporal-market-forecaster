@@ -68,32 +68,13 @@ function buildCandles(startPrice, count = 56) {
   });
 }
 
-function buildPredictions(symbol) {
+function getFallbackPredictions(symbol) {
   return [
-    {
-      title: "Next Candle Direction",
-      model: "XGBoost Classifier",
-      value: "Bullish",
-      confidence: 74,
-      tone: "positive",
-      note: `${symbol} momentum is still above the short-term mean.`,
-    },
-    {
-      title: "Volatility Band",
-      model: "LightGBM Regressor",
-      value: "$2.84",
-      confidence: 66,
-      tone: "warning",
-      note: "Expected hourly move range around the current mean.",
-    },
-    {
-      title: "Regime State",
-      model: "K-Means (k=3)",
-      value: "Per-Symbol",
-      confidence: 68,
-      tone: "neutral",
-      note: "Clustering runs on this symbol only, not market-wide.",
-    },
+    { title: "Trend Classifier", model: "XGBoost", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
+    { title: "Volatility Regressor", model: "LightGBM Regressor", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
+    { title: "Regime Clusterer", model: "K-Means (k=3)", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
+    { title: "Volume Surge Predictor", model: "XGBoost Regressor", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
+    { title: "Next-Day Gap Predictor", model: "XGBoost Multi-Class", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
   ];
 }
 
@@ -171,10 +152,32 @@ export default function App() {
     [selectedAsset.basePrice],
   );
 
-  const predictions = useMemo(
-    () => buildPredictions(selectedAsset.symbol),
-    [selectedAsset.symbol],
-  );
+  const [predictions, setPredictions] = useState(() => getFallbackPredictions(selectedAsset.symbol));
+
+  useEffect(() => {
+    let active = true;
+    const fetchPredictions = async () => {
+      try {
+        const response = await fetch(`/api/predictions/all/${selectedAsset.symbol}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (active && data.predictions) {
+          setPredictions(data.predictions);
+        }
+      } catch (err) {
+        // preserve fallback if offline
+      }
+    };
+    
+    // Initial fetch
+    fetchPredictions();
+    // Poll every 10 seconds for live updates as data streams in
+    const timer = setInterval(fetchPredictions, 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [selectedAsset.symbol]);
 
   const runGlobalSimulationAction = async (action) => {
     if (!action) {

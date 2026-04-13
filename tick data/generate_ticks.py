@@ -17,8 +17,8 @@ def generate_tick_data(filename, num_rows, symbol):
         writer.writerow(['time', 'symbol', 'price', 'volume'])
         
         for _ in range(num_rows):
-            # Advance time by random milliseconds (simulating high-frequency trades)
-            current_time += timedelta(milliseconds=random.randint(1, 500))
+            # Advance time by random intervals (simulating chronological spread across longer timeframes)
+            current_time += timedelta(minutes=random.randint(1, 30), seconds=random.randint(1, 59))
             
             # Simulate realistic price movement (Random Walk)
             current_price += random.uniform(-0.02, 0.02)
@@ -49,8 +49,8 @@ def parse_args():
     parser.add_argument(
         "--rows",
         type=int,
-        default=1_000_000,
-        help="Number of rows to generate (default: 1000000).",
+        default=100_000,
+        help="Number of rows to generate (default: 100000).",
     )
     return parser.parse_args()
 
