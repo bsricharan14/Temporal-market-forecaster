@@ -284,6 +284,13 @@ export default function ChartsPage({
             >
               {busyAction === "restart" ? "Restarting..." : "Restart"}
             </button>
+            <button
+              className="sim-btn"
+              disabled={busyAction !== ""}
+              onClick={() => simulationControls?.runAction?.("clear")}
+            >
+              {busyAction === "clear" ? "Clearing..." : "Clear"}
+            </button>
           </div>
         </div>
 

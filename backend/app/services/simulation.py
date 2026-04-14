@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,7 @@ class SimulationManager:
         self._states: dict[str, SymbolSimulationState] = {}
         self._states_lock = asyncio.Lock()
         self._all_symbol_clients: set[WebSocket] = set()
+        self.maintenance_lock = asyncio.Lock()
 
     def _discover_symbols(self) -> list[str]:
         symbols: set[str] = set()
@@ -143,6 +145,20 @@ class SimulationManager:
                     args,
                 )
 
+    async def _cancel_running_task(self, state: SymbolSimulationState) -> None:
+        task_to_cancel: asyncio.Task | None = None
+        async with state.lock:
+            state.running = False
+            if state.task is not None and not state.task.done():
+                task_to_cancel = state.task
+                state.task.cancel()
+
+        if task_to_cancel is not None:
+            try:
+                await task_to_cancel
+            except asyncio.CancelledError:
+                pass
+
     def _snapshot(self, state: SymbolSimulationState) -> dict[str, Any]:
         status = "running" if state.running else "stopped"
         if not state.source_ticks:
@@ -233,11 +249,14 @@ class SimulationManager:
 
     async def start(self, symbol: str, *, restart: bool = False) -> dict[str, Any]:
         state = await self._get_state(symbol)
+        if restart:
+            async with self.maintenance_lock:
+                await self._cancel_running_task(state)
+                await self._clear_symbol_data(state.symbol)
+
         async with state.lock:
             await self._ensure_source_ticks(state, force_reload=restart)
             if restart:
-                await self._clear_all_tick_data()
-                state.running = False
                 state.index = 0
                 state.last_price = None
                 state.replay_time = None
@@ -257,11 +276,16 @@ class SimulationManager:
     async def start_all(self, *, restart: bool = False) -> list[dict[str, Any]]:
         symbols = await self._all_known_symbols()
         if restart:
-            logger.info("Restarting simulation - clearing all data...")
-            await self._clear_all_tick_data()
-            logger.info("Data cleared, reloading simulation state...")
-            # Small delay to ensure database operations complete
-            await asyncio.sleep(0.2)
+            async with self.maintenance_lock:
+                for symbol in symbols:
+                    state = await self._get_state(symbol)
+                    await self._cancel_running_task(state)
+
+                logger.info("Restarting simulation - clearing all data...")
+                await self._clear_all_tick_data()
+                logger.info("Data cleared, reloading simulation state...")
+                # Small delay to ensure database operations complete
+                await asyncio.sleep(0.2)
 
         snapshots: list[dict[str, Any]] = []
         for symbol in symbols:
@@ -269,9 +293,6 @@ class SimulationManager:
             async with state.lock:
                 await self._ensure_source_ticks(state, force_reload=restart)
                 if restart:
-                    if state.task is not None and not state.task.done():
-                        state.running = False
-                        state.task.cancel()
                     state.task = None
                     state.index = 0
                     state.last_price = None
@@ -325,8 +346,8 @@ class SimulationManager:
 
     async def stop(self, symbol: str) -> dict[str, Any]:
         state = await self._get_state(symbol)
+        await self._cancel_running_task(state)
         async with state.lock:
-            state.running = False
             snapshot = self._snapshot(state)
 
         await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
@@ -338,8 +359,34 @@ class SimulationManager:
 
         for symbol in symbols:
             state = await self._get_state(symbol)
+            await self._cancel_running_task(state)
             async with state.lock:
                 await self._ensure_source_ticks(state)
+                snapshot = self._snapshot(state)
+                snapshots.append(snapshot)
+
+            await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
+
+        return snapshots
+
+    async def clear_all(self) -> list[dict[str, Any]]:
+        symbols = await self._all_known_symbols()
+
+        async with self.maintenance_lock:
+            for symbol in symbols:
+                state = await self._get_state(symbol)
+                await self._cancel_running_task(state)
+
+            await self._clear_all_tick_data()
+
+        snapshots: list[dict[str, Any]] = []
+        for symbol in symbols:
+            state = await self._get_state(symbol)
+            async with state.lock:
+                await self._ensure_source_ticks(state)
+                state.index = 0
+                state.last_price = None
+                state.replay_time = None
                 state.running = False
                 snapshot = self._snapshot(state)
                 snapshots.append(snapshot)
@@ -351,10 +398,11 @@ class SimulationManager:
     async def _run_simulation(self, state: SymbolSimulationState) -> None:
         try:
             while True:
+                loop_started_at = time.perf_counter()
                 tick_to_insert = None
                 tick_payload = None
                 status_payload = None
-                sleep_duration = 0
+                target_interval = 0
 
                 async with state.lock:
                     if not state.running:
@@ -398,7 +446,7 @@ class SimulationManager:
 
                         # Deterministic playback speed:
                         # 1x => 1 second per tick, 2x => 0.5s, 0.5x => 2s.
-                        sleep_duration = max(0.001, 1.0 / max(0.1, state.speed_multiplier))
+                        target_interval = max(0.001, 1.0 / max(0.1, state.speed_multiplier))
                         
                         state.index += 1
 
@@ -407,18 +455,35 @@ class SimulationManager:
                     break
 
                 if tick_to_insert is not None:
-                    await self._insert_tick(tick_to_insert)
-                    logger.debug(f"Inserted tick for {state.symbol}: price={tick_to_insert['price']}")
+                    try:
+                        await self._insert_tick(tick_to_insert)
+                        logger.debug(f"Inserted tick for {state.symbol}: price={tick_to_insert['price']}")
+                    except Exception as error:
+                        if error.__class__.__name__ == "PoolClosed":
+                            logger.info("Stopping simulation for %s because DB pool is closed", state.symbol)
+                            async with state.lock:
+                                state.running = False
+                            break
+                        raise
 
                 if tick_payload is not None:
                     logger.debug(f"Broadcasting tick for {state.symbol}: position={tick_payload.get('position')}/{tick_payload.get('total_ticks')}")
                     await self._broadcast(state, tick_payload)
 
-                if sleep_duration > 0:
-                    await asyncio.sleep(sleep_duration)
+                if target_interval > 0:
+                    elapsed = time.perf_counter() - loop_started_at
+                    sleep_duration = max(0.0, target_interval - elapsed)
+                    if sleep_duration > 0:
+                        await asyncio.sleep(sleep_duration)
         finally:
             async with state.lock:
                 state.task = None
+
+    async def shutdown(self) -> None:
+        symbols = await self._all_known_symbols()
+        for symbol in symbols:
+            state = await self._get_state(symbol)
+            await self._cancel_running_task(state)
 
 
 simulation_manager = SimulationManager()

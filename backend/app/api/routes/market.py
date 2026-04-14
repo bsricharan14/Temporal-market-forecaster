@@ -1,10 +1,11 @@
 import json
 import logging
+import re
 from pathlib import Path
 from statistics import median
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.db.connection import get_connection_pool
 from app.services.simulation import simulation_manager
@@ -13,6 +14,30 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 router = APIRouter(prefix="/market", tags=["market"])
 TICK_DATA_DIR = Path(__file__).resolve().parents[4] / "tick data"
+
+
+def _parse_window_to_interval(window: str | None, window_minutes: int | None) -> str:
+    if window is None:
+        return f"{window_minutes or 60} minutes"
+
+    value = window.strip().lower()
+    match = re.fullmatch(r"(\d+)\s*(m|h|d|minute|minutes|hour|hours|day|days)", value)
+    if not match:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid window format. Use values like '15m', '60 minutes', '1h', or '1 day'.",
+        )
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Window value must be greater than zero.")
+
+    if unit in {"m", "minute", "minutes"}:
+        return f"{amount} minutes"
+    if unit in {"h", "hour", "hours"}:
+        return f"{amount} hours"
+    return f"{amount} days"
 
 
 @router.get("/simulation/symbols")
@@ -51,6 +76,11 @@ async def stop_simulation_all():
 @router.post("/simulation/restart")
 async def restart_simulation_all():
     return {"states": await simulation_manager.start_all(restart=True)}
+
+
+@router.post("/simulation/clear")
+async def clear_simulation_all():
+    return {"states": await simulation_manager.clear_all()}
 
 
 @router.post("/simulation/speed")
@@ -160,7 +190,11 @@ async def benchmark(
     runs: int = Query(default=3, ge=1, le=10),
 ):
     pool = await get_connection_pool()
-    interval = window if window is not None else f"{window_minutes or 60} minutes"
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+
+    interval = _parse_window_to_interval(window, window_minutes)
     logger.info("Benchmark request: symbol=%s interval=%s runs=%s", symbol, interval, runs)
 
     def _normalize_explain_payload(payload: Any) -> Any:
@@ -240,126 +274,129 @@ async def benchmark(
             "runs": latencies,
         }
 
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            reference_time = await fetch_reference_time(cur, symbol)
-            logger.info("Benchmark reference time for symbol=%s: %s", symbol, reference_time)
+    async with simulation_manager.maintenance_lock:
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                # Avoid benchmark endpoint hanging indefinitely on expensive plans.
+                await cur.execute("SET LOCAL statement_timeout = '10000ms'")
+                reference_time = await fetch_reference_time(cur, normalized_symbol)
+                logger.info("Benchmark reference time for symbol=%s: %s", normalized_symbol, reference_time)
 
-            benchmark_cases = [
-                {
-                    "id": "latest_tick_lookup",
-                    "label": "Latest Tick Lookup",
-                    "plain_sql": """
-                        SELECT time, symbol, price::float8 AS price, volume
-                        FROM market_ticks_plain
-                        WHERE symbol = %s
-                        ORDER BY time DESC
-                        LIMIT 1
-                    """,
-                    "hypertable_sql": """
-                        SELECT time, symbol, price::float8 AS price, volume
-                        FROM market_ticks
-                        WHERE symbol = %s
-                        ORDER BY time DESC
-                        LIMIT 1
-                    """,
-                    "cagg_sql": None,
-                    "params": (symbol,),
-                },
-                {
-                    "id": "window_scan",
-                    "label": "Window Range Scan",
-                    "plain_sql": """
-                        SELECT time, symbol, price::float8 AS price, volume
-                        FROM market_ticks_plain
-                        WHERE symbol = %s
-                          AND time >= %s - %s::interval
-                        ORDER BY time DESC
-                    """,
-                    "hypertable_sql": """
-                        SELECT time, symbol, price::float8 AS price, volume
-                        FROM market_ticks
-                        WHERE symbol = %s
-                          AND time >= %s - %s::interval
-                        ORDER BY time DESC
-                    """,
-                    "cagg_sql": None,
-                    "params": (symbol, reference_time, interval),
-                },
-                {
-                    "id": "ohlcv_1m",
-                    "label": "1m OHLC Aggregate",
-                    "plain_sql": """
-                        SELECT
-                            time_bucket(INTERVAL '1 minute', time) AS bucket,
-                            first(price, time) AS open,
-                            max(price) AS high,
-                            min(price) AS low,
-                            last(price, time) AS close,
-                            sum(volume) AS volume
-                        FROM market_ticks_plain
-                        WHERE symbol = %s
-                          AND time >= %s - %s::interval
-                        GROUP BY bucket
-                        ORDER BY bucket DESC
-                    """,
-                    "hypertable_sql": """
-                        SELECT
-                            time_bucket(INTERVAL '1 minute', time) AS bucket,
-                            first(price, time) AS open,
-                            max(price) AS high,
-                            min(price) AS low,
-                            last(price, time) AS close,
-                            sum(volume) AS volume
-                        FROM market_ticks
-                        WHERE symbol = %s
-                          AND time >= %s - %s::interval
-                        GROUP BY bucket
-                        ORDER BY bucket DESC
-                    """,
-                    "cagg_sql": """
-                        SELECT bucket, open, high, low, close, volume
-                        FROM ohlcv_1m
-                        WHERE symbol = %s
-                          AND bucket >= %s - %s::interval
-                        ORDER BY bucket DESC
-                    """,
-                    "params": (symbol, reference_time, interval),
-                },
-            ]
-
-            case_results: list[dict] = []
-            for benchmark_case in benchmark_cases:
-                plain_stats = await query_stats(cur, benchmark_case["plain_sql"], benchmark_case["params"])
-                hypertable_stats = await query_stats(cur, benchmark_case["hypertable_sql"], benchmark_case["params"])
-                cagg_stats = None
-                if benchmark_case["cagg_sql"]:
-                    cagg_stats = await query_stats(cur, benchmark_case["cagg_sql"], benchmark_case["params"])
-
-                hypertable_speedup = (
-                    round(plain_stats["median_ms"] / hypertable_stats["median_ms"], 2)
-                    if hypertable_stats["median_ms"] > 0
-                    else None
-                )
-                cagg_speedup = (
-                    round(plain_stats["median_ms"] / cagg_stats["median_ms"], 2)
-                    if cagg_stats and cagg_stats["median_ms"] > 0
-                    else None
-                )
-
-                case_results.append(
+                benchmark_cases = [
                     {
-                        "id": benchmark_case["id"],
-                        "label": benchmark_case["label"],
-                        "plain": plain_stats,
-                        "hypertable": hypertable_stats,
-                        "continuous_aggregate": cagg_stats,
-                        "speedup": {
-                            "hypertable_vs_plain": hypertable_speedup,
-                            "cagg_vs_plain": cagg_speedup,
-                        },
-                    }
-                )
+                        "id": "latest_tick_lookup",
+                        "label": "Latest Tick Lookup",
+                        "plain_sql": """
+                            SELECT time, symbol, price::float8 AS price, volume
+                            FROM market_ticks_plain
+                            WHERE symbol = %s
+                            ORDER BY time DESC
+                            LIMIT 1
+                        """,
+                        "hypertable_sql": """
+                            SELECT time, symbol, price::float8 AS price, volume
+                            FROM market_ticks
+                            WHERE symbol = %s
+                            ORDER BY time DESC
+                            LIMIT 1
+                        """,
+                        "cagg_sql": None,
+                        "params": (normalized_symbol,),
+                    },
+                    {
+                        "id": "window_scan",
+                        "label": "Window Range Scan",
+                        "plain_sql": """
+                            SELECT time, symbol, price::float8 AS price, volume
+                            FROM market_ticks_plain
+                            WHERE symbol = %s
+                              AND time >= %s - %s::interval
+                            ORDER BY time DESC
+                        """,
+                        "hypertable_sql": """
+                            SELECT time, symbol, price::float8 AS price, volume
+                            FROM market_ticks
+                            WHERE symbol = %s
+                              AND time >= %s - %s::interval
+                            ORDER BY time DESC
+                        """,
+                        "cagg_sql": None,
+                        "params": (normalized_symbol, reference_time, interval),
+                    },
+                    {
+                        "id": "ohlcv_1m",
+                        "label": "1m OHLC Aggregate",
+                        "plain_sql": """
+                            SELECT
+                                time_bucket(INTERVAL '1 minute', time) AS bucket,
+                                first(price, time) AS open,
+                                max(price) AS high,
+                                min(price) AS low,
+                                last(price, time) AS close,
+                                sum(volume) AS volume
+                            FROM market_ticks_plain
+                            WHERE symbol = %s
+                              AND time >= %s - %s::interval
+                            GROUP BY bucket
+                            ORDER BY bucket DESC
+                        """,
+                        "hypertable_sql": """
+                            SELECT
+                                time_bucket(INTERVAL '1 minute', time) AS bucket,
+                                first(price, time) AS open,
+                                max(price) AS high,
+                                min(price) AS low,
+                                last(price, time) AS close,
+                                sum(volume) AS volume
+                            FROM market_ticks
+                            WHERE symbol = %s
+                              AND time >= %s - %s::interval
+                            GROUP BY bucket
+                            ORDER BY bucket DESC
+                        """,
+                        "cagg_sql": """
+                            SELECT bucket, open, high, low, close, volume
+                            FROM ohlcv_1m
+                            WHERE symbol = %s
+                              AND bucket >= %s - %s::interval
+                            ORDER BY bucket DESC
+                        """,
+                        "params": (normalized_symbol, reference_time, interval),
+                    },
+                ]
+
+                case_results: list[dict] = []
+                for benchmark_case in benchmark_cases:
+                    plain_stats = await query_stats(cur, benchmark_case["plain_sql"], benchmark_case["params"])
+                    hypertable_stats = await query_stats(cur, benchmark_case["hypertable_sql"], benchmark_case["params"])
+                    cagg_stats = None
+                    if benchmark_case["cagg_sql"]:
+                        cagg_stats = await query_stats(cur, benchmark_case["cagg_sql"], benchmark_case["params"])
+
+                    hypertable_speedup = (
+                        round(plain_stats["median_ms"] / hypertable_stats["median_ms"], 2)
+                        if hypertable_stats["median_ms"] > 0
+                        else None
+                    )
+                    cagg_speedup = (
+                        round(plain_stats["median_ms"] / cagg_stats["median_ms"], 2)
+                        if cagg_stats and cagg_stats["median_ms"] > 0
+                        else None
+                    )
+
+                    case_results.append(
+                        {
+                            "id": benchmark_case["id"],
+                            "label": benchmark_case["label"],
+                            "plain": plain_stats,
+                            "hypertable": hypertable_stats,
+                            "continuous_aggregate": cagg_stats,
+                            "speedup": {
+                                "hypertable_vs_plain": hypertable_speedup,
+                                "cagg_vs_plain": cagg_speedup,
+                            },
+                        }
+                    )
 
     hypertable_speedups = [
         result["speedup"]["hypertable_vs_plain"]
@@ -409,7 +446,7 @@ async def benchmark(
     )
 
     return {
-        "symbol": symbol,
+        "symbol": normalized_symbol,
         "window": interval,
         "runs": runs,
         "cases": case_results,

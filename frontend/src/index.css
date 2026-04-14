@@ -537,6 +537,13 @@ body {
 	font-family: "JetBrains Mono", "Consolas", monospace;
 }
 
+.model-row p:last-child {
+	font-family: "Sora", "Segoe UI", Tahoma, sans-serif;
+	font-size: 0.75rem;
+	line-height: 1.45;
+	color: var(--text-muted);
+}
+
 .model-meta {
 	display: grid;
 	gap: 6px;
@@ -574,6 +581,7 @@ body {
 	border-bottom: 1px solid var(--line);
 	font-size: 0.88rem;
 	vertical-align: middle;
+	white-space: nowrap;
 }
 
 .benchmark-table th {
@@ -581,7 +589,7 @@ body {
 }
 
 .benchmark-table td {
-	text-align: right;
+	text-align: left;
 	white-space: nowrap;
 }
 
@@ -639,11 +647,6 @@ body {
 	display: grid;
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 12px;
-}
-
-.benchmark-table {
-	display: grid;
-	gap: 14px;
 }
 
 .benchmark-matrix-wrap {
@@ -979,6 +982,21 @@ body {
 	margin: 4px 0 0;
 	color: var(--text-dim);
 	font-size: 0.74rem;
+	font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.prediction-explanation {
+	margin: 8px 0 0;
+	color: var(--text-main);
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.prediction-terms {
+	margin: 6px 0 10px;
+	color: var(--text-muted);
+	font-size: 0.76rem;
+	line-height: 1.45;
 	font-family: "JetBrains Mono", "Consolas", monospace;
 }
 

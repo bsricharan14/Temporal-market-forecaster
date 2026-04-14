@@ -7,31 +7,35 @@ import { useState } from "react";
 const MODELS = [
   {
     title: "Trend Classifier",
-    family: "XGBoost",
+    family: "XGBoost Classifier",
     metric: "accuracy",
     status: "Active",
     tone: "positive",
+    description: "Predicts bullish vs bearish next-candle direction.",
   },
   {
     title: "Volatility Regressor",
-    family: "LightGBM",
+    family: "XGBoost Regressor",
     metric: "rmse",
     status: "Active",
     tone: "warning",
+    description: "Estimates the next candle's expected price range.",
   },
   {
-    title: "Regime Clusterer",
-    family: "K-Means (k=3)",
+    title: "Regime Classifier",
+    family: "XGBoost Classifier",
     metric: "silhouette",
     status: "Active",
     tone: "neutral",
+    description: "Maps the market into consolidated, trending, or volatile states.",
   },
   {
-    title: "Gap Predictor",
+    title: "Next-Day Gap Predictor",
     family: "XGBoost Multi-Class",
     metric: "accuracy",
     status: "Active",
     tone: "negative",
+    description: "Predicts whether the next session opens up, down, or flat.",
   },
 ];
 
@@ -94,6 +98,7 @@ export default function MlPredictionsPage({ selectedAsset, predictions }) {
                 <div>
                   <h3>{model.title}</h3>
                   <p>{model.family}</p>
+                  <p>{model.description}</p>
                 </div>
                 <div className="model-meta">
                   <Pill tone={model.tone}>{model.metric}</Pill>

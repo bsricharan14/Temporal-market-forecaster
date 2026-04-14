@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Panel from "../ui/Panel";
 import MetricCard from "../ui/MetricCard";
-import BenchmarkMatrix from "./BenchmarkMatrix";
 
 const WINDOW_OPTIONS = [15, 60, 240, 1440];
 const RUN_OPTIONS = [1, 3, 5];
@@ -13,6 +12,73 @@ function formatMs(value) {
   return `${value.toFixed(3)} ms`;
 }
 
+function formatSpeedup(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "--";
+  }
+  return `${value.toFixed(2)}x`;
+}
+
+function speedupClass(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "speedup-neutral";
+  }
+  return value > 1 ? "speedup-positive" : "speedup-negative";
+}
+
+function BenchmarkMatrix({ cases, loading }) {
+  return (
+    <div className="benchmark-matrix-panel">
+      {loading ? (
+        <div className="benchmark-loading">Running benchmark, please wait...</div>
+      ) : null}
+
+      <div className="benchmark-table-wrapper">
+        <table className="benchmark-table" role="table" aria-label="Benchmark result matrix">
+          <thead>
+            <tr>
+              <th>Query</th>
+              <th>Plain</th>
+              <th>Hypertable</th>
+              <th>Hyper Speedup</th>
+              <th>Cagg</th>
+              <th>Cagg Speedup</th>
+              <th>Rows</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cases.map((row, idx) => (
+              <tr key={row.id} style={{ backgroundColor: idx % 2 === 0 ? "#0e1116" : "#111722" }}>
+                <td style={{ color: "#f4f6fb", fontWeight: "500" }}>{row.label}</td>
+                <td style={{ color: "#9ea9bd" }}>{formatMs(row.plain?.median_ms)}</td>
+                <td style={{ color: "#9ea9bd" }}>{formatMs(row.hypertable?.median_ms)}</td>
+                <td>
+                  <span className={`speedup-pill ${speedupClass(row.speedup?.hypertable_vs_plain)}`}>
+                    {formatSpeedup(row.speedup?.hypertable_vs_plain)}
+                  </span>
+                </td>
+                <td style={{ color: "#9ea9bd" }}>
+                  {row.continuous_aggregate ? formatMs(row.continuous_aggregate?.median_ms) : "N/A"}
+                </td>
+                <td>
+                  {row.continuous_aggregate ? (
+                    <span className={`speedup-pill ${speedupClass(row.speedup?.cagg_vs_plain)}`}>
+                      {formatSpeedup(row.speedup?.cagg_vs_plain)}
+                    </span>
+                  ) : (
+                    "N/A"
+                  )}
+                </td>
+                <td style={{ color: "#9ea9bd" }}>{row.plain?.rows ?? "--"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function BenchmarkPage({ selectedAsset, simulationControls }) {
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [runs, setRuns] = useState(3);
@@ -20,14 +86,23 @@ export default function BenchmarkPage({ selectedAsset, simulationControls }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lastRunAt, setLastRunAt] = useState(null);
+  const benchmarkAbortRef = useRef(null);
   const busyAction = simulationControls?.busyAction ?? "";
 
-  const runBenchmark = async () => {
+  const runBenchmark = useCallback(async () => {
+    if (benchmarkAbortRef.current) {
+      benchmarkAbortRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    benchmarkAbortRef.current = controller;
+
     setLoading(true);
     setError("");
     try {
       const response = await fetch(
         `/api/market/benchmark?symbol=${encodeURIComponent(selectedAsset.symbol)}&window=${encodeURIComponent(`${windowMinutes} minutes`)}&runs=${runs}`,
+        { signal: controller.signal },
       );
       if (!response.ok) {
         const body = await response.text();
@@ -38,16 +113,28 @@ export default function BenchmarkPage({ selectedAsset, simulationControls }) {
       setBenchmark(payload);
       setLastRunAt(new Date());
     } catch (fetchError) {
+      if (fetchError?.name === "AbortError") {
+        return;
+      }
       console.error("Benchmark fetch error:", fetchError);
       setError(fetchError.message || "Unable to run benchmark");
     } finally {
+      if (benchmarkAbortRef.current === controller) {
+        benchmarkAbortRef.current = null;
+      }
       setLoading(false);
     }
-  };
+  }, [runs, selectedAsset.symbol, windowMinutes]);
 
   useEffect(() => {
     runBenchmark();
-  }, [selectedAsset.symbol, windowMinutes, runs]);
+    return () => {
+      if (benchmarkAbortRef.current) {
+        benchmarkAbortRef.current.abort();
+        benchmarkAbortRef.current = null;
+      }
+    };
+  }, [runBenchmark]);
 
   const summary = useMemo(() => {
     const suite = Array.isArray(benchmark?.cases) ? benchmark.cases : [];
@@ -110,6 +197,13 @@ export default function BenchmarkPage({ selectedAsset, simulationControls }) {
             onClick={() => simulationControls?.runAction?.("restart")}
           >
             {busyAction === "restart" ? "Restarting..." : "Restart"}
+          </button>
+          <button
+            className="sim-btn"
+            disabled={busyAction !== ""}
+            onClick={() => simulationControls?.runAction?.("clear")}
+          >
+            {busyAction === "clear" ? "Clearing..." : "Clear"}
           </button>
         </div>
 

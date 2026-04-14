@@ -1,6 +1,3 @@
--- Core schema for Temporal Market Forecaster
--- Safe to run multiple times.
-
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 CREATE EXTENSION IF NOT EXISTS pgml CASCADE;
 

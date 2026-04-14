@@ -5,7 +5,7 @@ export default function PredictionsPanel({ symbol, regime, predictions }) {
   return (
     <Panel
       title="Model Predictions"
-      subtitle={`${symbol} dummy outputs`}
+      subtitle={`${symbol} live outputs`}
       right={<Pill tone="neutral">{regime}</Pill>}
     >
       <div className="predictions-stack">
@@ -16,7 +16,9 @@ export default function PredictionsPanel({ symbol, regime, predictions }) {
               <Pill tone={prediction.tone}>{prediction.value}</Pill>
             </div>
             <p className="prediction-model">{prediction.model}</p>
+            <p className="prediction-explanation">{prediction.explanation}</p>
             <p className="prediction-note">{prediction.note}</p>
+            <p className="prediction-terms">{prediction.terms}</p>
             <div className="confidence-row">
               <span>Confidence</span>
               <strong>{prediction.confidence}%</strong>

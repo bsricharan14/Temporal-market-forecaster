@@ -296,6 +296,13 @@ export default function Dashboard({
             >
               {busyAction === "restart" ? "Restarting..." : "Restart"}
             </button>
+            <button
+              className="sim-btn"
+              disabled={busyAction !== ""}
+              onClick={() => simulationControls?.runAction?.("clear")}
+            >
+              {busyAction === "clear" ? "Clearing..." : "Clear"}
+            </button>
           </div>
         </div>
 

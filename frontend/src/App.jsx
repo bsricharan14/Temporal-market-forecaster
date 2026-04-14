@@ -93,11 +93,56 @@ const ASSETS = [
 
 function getFallbackPredictions(symbol) {
   return [
-    { title: "Trend Classifier", model: "XGBoost", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
-    { title: "Volatility Regressor", model: "LightGBM Regressor", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
-    { title: "Regime Clusterer", model: "K-Means (k=3)", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
-    { title: "Volume Surge Predictor", model: "XGBoost Regressor", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
-    { title: "Next-Day Gap Predictor", model: "XGBoost Multi-Class", value: "Offline", confidence: 0, tone: "neutral", note: "Waiting for database inference..." },
+    {
+      title: "Trend Classifier",
+      model: "XGBoost",
+      value: "Offline",
+      confidence: 0,
+      tone: "neutral",
+      note: "Waiting for database inference...",
+      explanation: "Predicts whether the next candle is likely to close above or below the current candle.",
+      terms: "Bullish = price expected to rise, Bearish = price expected to fall, current_spread = high - low for the candle.",
+    },
+    {
+      title: "Volatility Regressor",
+      model: "XGBoost Regressor",
+      value: "Offline",
+      confidence: 0,
+      tone: "neutral",
+      note: "Waiting for database inference...",
+      explanation: "Estimates how wide the next candle price range may be.",
+      terms: "Volatility = size of price movement, spread = high - low, higher value means a wider expected range.",
+    },
+    {
+      title: "Regime Classifier",
+      model: "XGBoost Classifier",
+      value: "Offline",
+      confidence: 0,
+      tone: "neutral",
+      note: "Waiting for database inference...",
+      explanation: "Classifies the current market condition into a simple behavior bucket.",
+      terms: "Consolidating = sideways, Trending = directional move, Highly Volatile = large swings.",
+    },
+    {
+      title: "Volume Surge Predictor",
+      model: "XGBoost Regressor",
+      value: "Offline",
+      confidence: 0,
+      tone: "neutral",
+      note: "Waiting for database inference...",
+      explanation: "Predicts whether the next hourly period may see heavier trading activity.",
+      terms: "Volume = number of shares/contracts traded, surge = volume above normal pace.",
+    },
+    {
+      title: "Next-Day Gap Predictor",
+      model: "XGBoost Multi-Class",
+      value: "Offline",
+      confidence: 0,
+      tone: "neutral",
+      note: "Waiting for database inference...",
+      explanation: "Predicts whether the next day may open above, below, or near the prior close.",
+      terms: "Gap Up = open above previous close, Gap Down = open below previous close, Flat = little change.",
+    },
   ];
 }
 
@@ -456,12 +501,13 @@ export default function App() {
     setGlobalSimulationError("");
 
     try {
-      // On restart, clear all data first
-      if (action === "restart") {
+      // On restart/clear, clear all frontend data immediately.
+      if (action === "restart" || action === "clear") {
         setIsInitializing(true);
         setCandles1mBySymbol({});
         setLivePriceBySymbol({});
         setStatusBySymbol({});
+        setSpeedBySymbol({});
         setLastTickTimeBySymbol({});
         // Small delay to ensure state updates
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -537,10 +583,14 @@ export default function App() {
         }
       }
 
+      if (action === "clear") {
+        setIsInitializing(false);
+      }
+
     } catch (error) {
       setGlobalSimulationError(error.message || "Simulation command failed");
     } finally {
-      if (action === "restart") {
+      if (action === "restart" || action === "clear") {
         setIsInitializing(false);
       }
       setGlobalBusyAction("");
