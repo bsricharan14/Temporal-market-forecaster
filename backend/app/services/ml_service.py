@@ -76,15 +76,15 @@ async def train_regime_model():
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             try:
-                # Provide a limited view strictly casting to REAL so PostgresML rust logic doesn't panic on numeric types
-                await cur.execute("CREATE OR REPLACE VIEW pgml_train_regime AS SELECT open::REAL, high::REAL, low::REAL, close::REAL, volume::REAL, current_spread::REAL FROM ml_features_hourly WHERE current_spread IS NOT NULL;")
+                # Bypass native K-Means rust panic by mathematically clustering regimes into explicit target labels and using XGBoost classification
+                await cur.execute("CREATE OR REPLACE VIEW pgml_train_regime AS SELECT open::REAL, high::REAL, low::REAL, close::REAL, volume::REAL, current_spread::REAL, CASE WHEN current_spread < 1.0 THEN 0 WHEN current_spread < 2.5 THEN 1 ELSE 2 END AS target_regime_id FROM ml_features_hourly WHERE current_spread IS NOT NULL;")
                 query = """
                 SELECT * FROM pgml.train(
                     'Market Regime Identifier',
-                    task => 'cluster',
+                    task => 'classification',
                     relation_name => 'pgml_train_regime',
-                    algorithm => 'kmeans',
-                    hyperparams => '{"n_clusters": 3}'::jsonb
+                    y_column_name => 'target_regime_id',
+                    algorithm => 'xgboost'
                 );
                 """
                 await cur.execute(query)
