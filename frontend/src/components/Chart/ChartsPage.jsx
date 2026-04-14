@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import CandlestickChart from "./CandlestickChart";
 import Panel from "../ui/Panel";
 import Pill from "../ui/Pill";
@@ -20,7 +20,6 @@ const TIMEFRAME_OPTIONS = [
   { key: "1d", label: "1d", minutes: 1440, maxCandles: 120 },
 ];
 
-const MAX_TICKS = 2500;
 const MIN_SPEED = 0.25;
 const MAX_SPEED = 20;
 const SPEED_STEP = 0.25;
@@ -30,20 +29,6 @@ function formatCompactNumber(value) {
     notation: "compact",
     maximumFractionDigits: 2,
   }).format(value);
-}
-
-function wsBaseUrl() {
-  const configured = import.meta.env.VITE_WS_URL;
-  if (configured) {
-    return configured.replace(/\/$/, "");
-  }
-
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}`;
-}
-
-function wsStreamUrl() {
-  return `${wsBaseUrl()}/ws/stream`;
 }
 
 function formatTimestamp(value) {
@@ -61,349 +46,139 @@ function formatTimestamp(value) {
   });
 }
 
-function buildCandlesFromTicks(ticks, timeframeMinutes) {
-  if (!ticks.length) {
+function aggregateCandles1m(candles1m, timeframeMinutes) {
+  if (!candles1m || !candles1m.length) {
     return [];
+  }
+
+  if (timeframeMinutes === 1) {
+    return candles1m.map((c, index) => ({ ...c, index }));
   }
 
   const buckets = new Map();
   const bucketMs = timeframeMinutes * 60 * 1000;
 
-  for (const tick of ticks) {
-    const date = new Date(tick.time);
-    if (Number.isNaN(date.getTime())) {
-      continue;
-    }
+  for (const candle of candles1m) {
+    const candleTime = new Date(candle.bucket).getTime();
+    if (Number.isNaN(candleTime)) continue;
 
-    const bucketStartMs = Math.floor(date.getTime() / bucketMs) * bucketMs;
+    const bucketStartMs = Math.floor(candleTime / bucketMs) * bucketMs;
     const key = new Date(bucketStartMs).toISOString();
-    const price = Number(tick.price);
-    const volume = Number(tick.volume) || 0;
-    const existing = buckets.get(key);
 
+    const existing = buckets.get(key);
     if (!existing) {
       buckets.set(key, {
         bucket: key,
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
       });
-      continue;
+    } else {
+      existing.high = Math.max(existing.high, candle.high);
+      existing.low = Math.min(existing.low, candle.low);
+      existing.close = candle.close;
+      existing.volume += candle.volume;
     }
-
-    existing.close = price;
-    existing.lastTime = tick.time;
-    existing.high = Math.max(existing.high, price);
-    existing.low = Math.min(existing.low, price);
-    existing.volume += volume;
   }
 
-  const candleSeries = Array.from(buckets.values())
-    .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime());
-
-  return candleSeries
+  return Array.from(buckets.values())
+    .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime())
     .map((item, index) => ({ ...item, index }));
 }
 
-function fallbackCandles(basePrice) {
-  return Array.from({ length: 30 }, (_, index) => ({
-    index,
-    open: basePrice,
-    high: basePrice,
-    low: basePrice,
-    close: basePrice,
-    volume: 0,
-  }));
-}
-
-export default function ChartsPage({ selectedAsset, simulationControls }) {
-  const [availableSymbols, setAvailableSymbols] = useState([]);
-  const [selectedSymbol, setSelectedSymbol] = useState(selectedAsset.symbol);
+export default function ChartsPage({
+  assets,
+  selectedAsset,
+  onSymbolChange,
+  candles1m,
+  livePrice,
+  simulationStatus,
+  speedMultiplier,
+  socketStatus,
+  errorMessage,
+  isInitializing,
+  lastTickTime,
+  simulationControls,
+}) {
   const [timeframe, setTimeframe] = useState(TIMEFRAME_OPTIONS[0]);
-  const [ticksBySymbol, setTicksBySymbol] = useState({});
-  const [statusBySymbol, setStatusBySymbol] = useState({});
-  const [speedBySymbol, setSpeedBySymbol] = useState({});
-  const [socketStatus, setSocketStatus] = useState("connecting");
-  const [errorMessage, setErrorMessage] = useState("");
-  const [speedMultiplier, setSpeedMultiplier] = useState(1);
+  const [localSpeed, setLocalSpeed] = useState(speedMultiplier);
+  const [chartOffset, setChartOffset] = useState(0);
 
-  useEffect(() => {
-    setSelectedSymbol(selectedAsset.symbol);
-  }, [selectedAsset.symbol]);
-
-  useEffect(() => {
-    let active = true;
-
-    const loadSymbols = async () => {
-      try {
-        const response = await fetch("/api/market/simulation/symbols");
-        if (!response.ok) {
-          throw new Error("Failed to load symbols");
-        }
-
-        const payload = await response.json();
-        const symbols = Array.isArray(payload.symbols) ? payload.symbols : [];
-        if (!active) {
-          return;
-        }
-
-        setAvailableSymbols(symbols);
-        if (symbols.length && !symbols.includes(selectedSymbol)) {
-          setSelectedSymbol(symbols[0]);
-        }
-      } catch {
-        if (active) {
-          setAvailableSymbols([]);
-        }
-      }
-    };
-
-    loadSymbols();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const symbol = selectedSymbol;
-  const ticks = ticksBySymbol[symbol] ?? [];
-  const simulationStatus = statusBySymbol[symbol] ?? "loading";
+  const symbol = selectedAsset.symbol;
   const busyAction = simulationControls?.busyAction ?? "";
 
-  const candles = useMemo(
-    () => buildCandlesFromTicks(ticks, timeframe.minutes),
-    [ticks, timeframe],
+  useEffect(() => {
+    setLocalSpeed(speedMultiplier);
+  }, [speedMultiplier]);
+
+  // Reset chart offset when symbol changes
+  useEffect(() => {
+    setChartOffset(0);
+  }, [symbol]);
+
+  const allChartCandles = useMemo(
+    () => aggregateCandles1m(candles1m, timeframe.minutes),
+    [candles1m, timeframe],
   );
-  const chartCandles = candles.length ? candles : fallbackCandles(selectedAsset.basePrice);
-  const livePrice = ticks.length
-    ? Number(ticks[ticks.length - 1].price)
-    : Number(selectedAsset.basePrice);
 
-  const trendTone = livePrice >= selectedAsset.basePrice ? "positive" : "negative";
-
+  // Keep max 50 candles visible, auto-scroll to show latest candles
+  const MAX_VISIBLE_CANDLES = 50;
+  
   useEffect(() => {
-    if (!availableSymbols.length) {
-      return;
+    // Auto-scroll to keep showing the latest candles
+    if (allChartCandles.length > MAX_VISIBLE_CANDLES) {
+      setChartOffset(Math.max(0, allChartCandles.length - MAX_VISIBLE_CANDLES));
+    } else {
+      setChartOffset(0);
     }
+  }, [allChartCandles.length]);
 
-    const controller = new AbortController();
-    let isMounted = true;
+  const chartCandles = useMemo(() => {
+    if (allChartCandles.length <= MAX_VISIBLE_CANDLES) {
+      return allChartCandles;
+    }
+    return allChartCandles.slice(chartOffset, chartOffset + MAX_VISIBLE_CANDLES);
+  }, [allChartCandles, chartOffset]);
 
-    const loadInitialDataForAllSymbols = async () => {
-      setErrorMessage("");
-      try {
-        const responses = await Promise.all(
-          availableSymbols.map(async (currentSymbol) => {
-            const [ticksResponse, statusResponse] = await Promise.all([
-              fetch(`/api/market/ticks?symbol=${encodeURIComponent(currentSymbol)}&limit=${MAX_TICKS}`, {
-                signal: controller.signal,
-              }),
-              fetch(`/api/market/simulation/${encodeURIComponent(currentSymbol)}/status`, {
-                signal: controller.signal,
-              }),
-            ]);
-
-            if (!ticksResponse.ok) {
-              throw new Error(`Failed to fetch ticks for ${currentSymbol}`);
-            }
-            if (!statusResponse.ok) {
-              throw new Error(`Failed to fetch simulation status for ${currentSymbol}`);
-            }
-
-            const fetchedTicks = await ticksResponse.json();
-            const status = await statusResponse.json();
-            return {
-              symbol: currentSymbol,
-              ticks: Array.isArray(fetchedTicks) ? fetchedTicks : [],
-              status,
-            };
-          }),
+  const handleChartScroll = useCallback((direction) => {
+    if (allChartCandles.length === 0) return;
+    
+    const step = 5;
+    setChartOffset((prev) => {
+      if (direction === "left") {
+        return Math.max(0, prev - step);
+      } else {
+        return Math.min(
+          Math.max(0, allChartCandles.length - MAX_VISIBLE_CANDLES),
+          prev + step
         );
-
-        if (!isMounted) {
-          return;
-        }
-
-        const nextTicksBySymbol = {};
-        const nextStatusBySymbol = {};
-        const nextSpeedBySymbol = {};
-
-        for (const item of responses) {
-          nextTicksBySymbol[item.symbol] = item.ticks;
-          nextStatusBySymbol[item.symbol] = item.status.status ?? "stopped";
-          if (typeof item.status.speed_multiplier === "number") {
-            nextSpeedBySymbol[item.symbol] = item.status.speed_multiplier;
-          }
-        }
-
-        setTicksBySymbol(nextTicksBySymbol);
-        setStatusBySymbol(nextStatusBySymbol);
-        setSpeedBySymbol(nextSpeedBySymbol);
-      } catch (error) {
-        if (isMounted && error.name !== "AbortError") {
-          setErrorMessage(error.message || "Unable to load chart data");
-        }
       }
-    };
+    });
+  }, [allChartCandles.length]);
 
-    loadInitialDataForAllSymbols();
-
-    return () => {
-      isMounted = false;
-      controller.abort();
-    };
-  }, [availableSymbols]);
-
+  // Keyboard shortcuts for chart scrolling
   useEffect(() => {
-    const speed = speedBySymbol[symbol];
-    if (typeof speed === "number") {
-      setSpeedMultiplier(speed);
-    }
-  }, [symbol, speedBySymbol]);
-
-  useEffect(() => {
-    let active = true;
-    let reconnectTimeout = null;
-    let socket = null;
-
-    const connect = () => {
-      if (!active) {
-        return;
-      }
-
-      setSocketStatus("connecting");
-      socket = new WebSocket(wsStreamUrl());
-
-      socket.onopen = () => {
-        if (!active) {
-          socket.close();
-          return;
-        }
-        setSocketStatus("connected");
-        setErrorMessage("");
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-
-          if (message.type === "tick" && message.tick) {
-            const tickSymbol = message.tick.symbol;
-            if (!tickSymbol) {
-              return;
-            }
-
-            setTicksBySymbol((previous) => {
-              const previousTicks = previous[tickSymbol] ?? [];
-              return {
-                ...previous,
-                [tickSymbol]: [...previousTicks, message.tick],
-              };
-            });
-            return;
-          }
-
-          if (message.type === "simulation_state" && message.state?.status) {
-            const stateSymbol = message.state.symbol;
-            if (!stateSymbol) {
-              return;
-            }
-
-            setStatusBySymbol((previous) => ({
-              ...previous,
-              [stateSymbol]: message.state.status,
-            }));
-
-            if (typeof message.state.speed_multiplier === "number") {
-              setSpeedBySymbol((previous) => ({
-                ...previous,
-                [stateSymbol]: message.state.speed_multiplier,
-              }));
-            }
-          }
-        } catch {
-          setErrorMessage("Received malformed simulation payload");
-        }
-      };
-
-      socket.onerror = () => {
-        if (!active) {
-          return;
-        }
-        setSocketStatus("error");
-      };
-
-      socket.onclose = (event) => {
-        if (!active) {
-          return;
-        }
-
-        setSocketStatus("disconnected");
-        if (!event.wasClean && event.code !== 1000 && event.code !== 1001) {
-          setErrorMessage("Live stream disconnected. Retrying...");
-        }
-
-        reconnectTimeout = window.setTimeout(connect, 1200);
-      };
-    };
-
-    connect();
-
-    return () => {
-      active = false;
-      if (reconnectTimeout !== null) {
-        window.clearTimeout(reconnectTimeout);
-      }
-
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        socket.close();
+    const handleKeyDown = (e) => {
+      if (allChartCandles.length === 0) return;
+      
+      if (e.key === "ArrowLeft" && e.ctrlKey) {
+        e.preventDefault();
+        handleChartScroll("left");
+      } else if (e.key === "ArrowRight" && e.ctrlKey) {
+        e.preventDefault();
+        handleChartScroll("right");
       }
     };
-  }, []);
 
-  const updateSimulationSpeed = async (nextSpeed) => {
-    setSpeedMultiplier(nextSpeed);
-    setErrorMessage("");
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleChartScroll, allChartCandles.length]);
 
-    try {
-      const response = await fetch(
-        `/api/market/simulation/speed?speed=${encodeURIComponent(nextSpeed)}`,
-        { method: "POST" },
-      );
+  const displayLivePrice = livePrice ?? selectedAsset.basePrice;
 
-      if (!response.ok) {
-        throw new Error("Unable to update simulation speed");
-      }
-
-      const payload = await response.json();
-      const states = Array.isArray(payload.states) ? payload.states : [];
-
-      if (states.length) {
-        setStatusBySymbol((previous) => {
-          const next = { ...previous };
-          for (const state of states) {
-            if (state?.symbol) {
-              next[state.symbol] = state.status ?? "stopped";
-            }
-          }
-          return next;
-        });
-
-        setSpeedBySymbol((previous) => {
-          const next = { ...previous };
-          for (const state of states) {
-            if (state?.symbol && typeof state.speed_multiplier === "number") {
-              next[state.symbol] = state.speed_multiplier;
-            }
-          }
-          return next;
-        });
-      }
-    } catch (error) {
-      setErrorMessage(error.message || "Unable to update simulation speed");
-    }
-  };
+  const trendTone = displayLivePrice >= selectedAsset.basePrice ? "positive" : "negative";
 
   return (
     <main className="page-shell">
@@ -416,11 +191,11 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
               id="chartSymbolSelect"
               className="symbol-select-inline"
               value={symbol}
-              onChange={(event) => setSelectedSymbol(event.target.value)}
+              onChange={(event) => onSymbolChange(event.target.value)}
             >
-              {(availableSymbols.length ? availableSymbols : [symbol]).map((item) => (
-                <option key={item} value={item}>
-                  {item}
+              {assets.map((item) => (
+                <option key={item.symbol} value={item.symbol}>
+                  {item.symbol}
                 </option>
               ))}
             </select>
@@ -433,8 +208,8 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
         <div className="chart-hero">
           <div>
             <p className="hero-label">Current Price</p>
-            <p className="hero-price">{formatPrice(livePrice)}</p>
-            <p className="hero-time">Last update: {ticks.length ? formatTimestamp(ticks[ticks.length - 1].time) : "--"}</p>
+            <p className="hero-price">{formatPrice(displayLivePrice)}</p>
+            <p className="hero-time">Last update: {lastTickTime ? formatTimestamp(lastTickTime) : "--"}</p>
           </div>
           <div className="hero-pills">
             <Pill tone={socketStatus === "connected" ? "positive" : "warning"}>
@@ -469,19 +244,19 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
               min={MIN_SPEED}
               max={MAX_SPEED}
               step={SPEED_STEP}
-              value={speedMultiplier}
+              value={localSpeed}
               disabled={busyAction !== ""}
               onChange={(event) => {
                 const next = Number(event.target.value);
                 if (Number.isFinite(next)) {
-                  setSpeedMultiplier(next);
+                  setLocalSpeed(next);
                 }
               }}
-              onMouseUp={(event) => updateSimulationSpeed(Number(event.currentTarget.value))}
-              onTouchEnd={(event) => updateSimulationSpeed(Number(event.currentTarget.value))}
+              onMouseUp={(event) => simulationControls?.updateSpeed?.(Number(event.currentTarget.value))}
+              onTouchEnd={(event) => simulationControls?.updateSpeed?.(Number(event.currentTarget.value))}
               onKeyUp={(event) => {
                 if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
-                  updateSimulationSpeed(Number(event.currentTarget.value));
+                  simulationControls?.updateSpeed?.(Number(event.currentTarget.value));
                 }
               }}
             />
@@ -505,10 +280,7 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
             <button
               className="sim-btn"
               disabled={busyAction !== ""}
-              onClick={() => {
-                setTicksBySymbol({});
-                simulationControls?.runAction?.("restart");
-              }}
+              onClick={() => simulationControls?.runAction?.("restart")}
             >
               {busyAction === "restart" ? "Restarting..." : "Restart"}
             </button>
@@ -523,11 +295,37 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
       <section className="charts-main-section">
         <Panel
           title={`${symbol} Candlestick View`}
-          subtitle={`Timeframe ${timeframe.label} · ${chartCandles.length} candles`}
+          subtitle={`Timeframe ${timeframe.label} · ${chartCandles.length} / ${allChartCandles.length} candles`}
           right={<Pill tone={trendTone}>{simulationStatus}</Pill>}
           className="chart-panel-large"
         >
-          <CandlestickChart data={chartCandles} height={360} timeframeLabel={timeframe.label} />
+          {isInitializing ? (
+            <div className="chart-wrap chart-empty" style={{ height: 360 }}>
+              Loading Tick Data...
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <button
+                className="chart-nav-btn"
+                onClick={() => handleChartScroll("left")}
+                disabled={chartOffset === 0 || allChartCandles.length === 0}
+                title="Scroll to older candles"
+              >
+                ←
+              </button>
+              <div style={{ flex: 1 }}>
+                <CandlestickChart data={chartCandles} height={360} timeframeLabel={timeframe.label} />
+              </div>
+              <button
+                className="chart-nav-btn"
+                onClick={() => handleChartScroll("right")}
+                disabled={chartOffset >= Math.max(0, allChartCandles.length - MAX_VISIBLE_CANDLES) || allChartCandles.length === 0}
+                title="Scroll to newer candles"
+              >
+                →
+              </button>
+            </div>
+          )}
         </Panel>
 
         <div className="charts-stats-row">
@@ -539,11 +337,11 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
             <div className="info-list">
               <div>
                 <span>Last Price</span>
-                <strong>{formatPrice(livePrice)}</strong>
+                <strong>{formatPrice(displayLivePrice)}</strong>
               </div>
               <div>
                 <span>Candles</span>
-                <strong>{chartCandles.length}</strong>
+                <strong>{chartCandles.length} / {allChartCandles.length}</strong>
               </div>
               <div>
                 <span>Timeframe</span>
@@ -551,27 +349,27 @@ export default function ChartsPage({ selectedAsset, simulationControls }) {
               </div>
               <div>
                 <span>Session Open</span>
-                <strong>{formatPrice(chartCandles[0].open)}</strong>
+                <strong>{chartCandles.length ? formatPrice(chartCandles[0].open) : "--"}</strong>
               </div>
               <div>
                 <span>Session High</span>
-                <strong>{formatPrice(Math.max(...chartCandles.map((point) => point.high)))}</strong>
+                <strong>{chartCandles.length ? formatPrice(Math.max(...chartCandles.map((point) => point.high))) : "--"}</strong>
               </div>
               <div>
                 <span>Session Low</span>
-                <strong>{formatPrice(Math.min(...chartCandles.map((point) => point.low)))}</strong>
+                <strong>{chartCandles.length ? formatPrice(Math.min(...chartCandles.map((point) => point.low))) : "--"}</strong>
               </div>
               <div>
                 <span>Total Volume</span>
                 <strong>
                   <span
-                    title={new Intl.NumberFormat("en-US").format(
+                    title={chartCandles.length ? new Intl.NumberFormat("en-US").format(
                       chartCandles.reduce((sum, point) => sum + point.volume, 0),
-                    )}
+                    ) : ""}
                   >
-                    {formatCompactNumber(
+                    {chartCandles.length ? formatCompactNumber(
                       chartCandles.reduce((sum, point) => sum + point.volume, 0),
-                    )}
+                    ) : "--"}
                   </span>
                 </strong>
               </div>

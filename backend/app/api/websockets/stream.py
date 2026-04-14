@@ -1,7 +1,9 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import logging
 
 from app.services.simulation import simulation_manager
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -10,7 +12,11 @@ async def market_stream_all(websocket: WebSocket):
     await websocket.accept()
     snapshots = await simulation_manager.subscribe_all(websocket)
     for snapshot in snapshots:
-        await websocket.send_json({"type": "simulation_state", "state": snapshot})
+        try:
+            await websocket.send_json({"type": "simulation_state", "state": snapshot})
+        except Exception as e:
+            logger.debug(f"Failed to send initial snapshot: {type(e).__name__}")
+            break
 
     try:
         while True:
@@ -18,7 +24,9 @@ async def market_stream_all(websocket: WebSocket):
             if message.get("type") == "websocket.disconnect":
                 break
     except WebSocketDisconnect:
-        pass
+        logger.debug("WebSocket disconnected: stream_all")
+    except Exception as e:
+        logger.debug(f"WebSocket error in stream_all: {type(e).__name__}")
     finally:
         await simulation_manager.unsubscribe_all(websocket)
 
@@ -34,6 +42,8 @@ async def market_stream(websocket: WebSocket, symbol: str):
             if message.get("type") == "websocket.disconnect":
                 break
     except WebSocketDisconnect:
-        pass
+        logger.debug(f"WebSocket disconnected: stream/{symbol}")
+    except Exception as e:
+        logger.debug(f"WebSocket error in stream/{symbol}: {type(e).__name__}")
     finally:
         await simulation_manager.unsubscribe(normalized_symbol, websocket)

@@ -427,6 +427,30 @@ body {
 	cursor: not-allowed;
 }
 
+.chart-nav-btn {
+	border: 1px solid var(--line);
+	background: #152033;
+	color: var(--text-main);
+	border-radius: 8px;
+	padding: 8px 14px;
+	font: inherit;
+	font-size: 0.84rem;
+	cursor: pointer;
+	transition: transform 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+	white-space: nowrap;
+}
+
+.chart-nav-btn:hover:not(:disabled) {
+	transform: translateY(-1px);
+	border-color: #4a6993;
+	background: #1d2a40;
+}
+
+.chart-nav-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
 .simulation-error {
 	color: var(--negative);
 }

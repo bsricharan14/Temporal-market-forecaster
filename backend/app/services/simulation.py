@@ -1,7 +1,8 @@
 import asyncio
 import csv
+import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from fastapi import WebSocket
 
 from app.db.connection import get_connection_pool
 
+logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TICK_DATA_DIR = PROJECT_ROOT / "tick data"
 
@@ -25,6 +27,7 @@ class SymbolSimulationState:
     loaded_from_csv: bool = False
     last_price: float | None = None
     speed_multiplier: float = 1.0
+    replay_time: datetime | None = None
 
 
 class SimulationManager:
@@ -101,10 +104,22 @@ class SimulationManager:
 
     async def _clear_all_tick_data(self) -> None:
         pool = await get_connection_pool()
-        async with pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute("TRUNCATE TABLE market_ticks")
-                await cur.execute("TRUNCATE TABLE market_ticks_plain")
+        try:
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    # Clear materialized views first (they depend on the tables)
+                    logger.info("Clearing OHLCV materialized views...")
+                    await cur.execute("TRUNCATE TABLE ohlcv_1m CASCADE")
+                    await cur.execute("TRUNCATE TABLE ohlcv_1h CASCADE")
+                    await cur.execute("TRUNCATE TABLE ohlcv_1d CASCADE")
+                    # Clear the main tables
+                    logger.info("Clearing market tick tables...")
+                    await cur.execute("TRUNCATE TABLE market_ticks CASCADE")
+                    await cur.execute("TRUNCATE TABLE market_ticks_plain CASCADE")
+                    logger.info("All tick data cleared successfully")
+        except Exception as e:
+            logger.error(f"Error clearing tick data: {e}")
+            raise
 
     async def _insert_tick(self, tick: dict[str, Any]) -> None:
         pool = await get_connection_pool()
@@ -222,8 +237,10 @@ class SimulationManager:
             await self._ensure_source_ticks(state, force_reload=restart)
             if restart:
                 await self._clear_all_tick_data()
+                state.running = False
                 state.index = 0
                 state.last_price = None
+                state.replay_time = None
 
             if not state.source_ticks:
                 return self._snapshot(state)
@@ -240,7 +257,11 @@ class SimulationManager:
     async def start_all(self, *, restart: bool = False) -> list[dict[str, Any]]:
         symbols = await self._all_known_symbols()
         if restart:
+            logger.info("Restarting simulation - clearing all data...")
             await self._clear_all_tick_data()
+            logger.info("Data cleared, reloading simulation state...")
+            # Small delay to ensure database operations complete
+            await asyncio.sleep(0.2)
 
         snapshots: list[dict[str, Any]] = []
         for symbol in symbols:
@@ -249,10 +270,13 @@ class SimulationManager:
                 await self._ensure_source_ticks(state, force_reload=restart)
                 if restart:
                     if state.task is not None and not state.task.done():
+                        state.running = False
                         state.task.cancel()
                     state.task = None
                     state.index = 0
                     state.last_price = None
+                    state.replay_time = None
+                    logger.info(f"Reset state for {symbol}: index=0")
 
                 if not state.source_ticks:
                     snapshot = self._snapshot(state)
@@ -262,12 +286,15 @@ class SimulationManager:
                 state.running = True
                 if state.task is None or state.task.done():
                     state.task = asyncio.create_task(self._run_simulation(state))
+                    logger.info(f"Started simulation task for {symbol}")
 
                 snapshot = self._snapshot(state)
                 snapshots.append(snapshot)
 
             await self._broadcast(state, {"type": "simulation_state", "state": snapshot})
 
+        if restart:
+            logger.info(f"Restart complete - {len(symbols)} symbols restarted")
         return snapshots
 
     async def set_speed(self, symbol: str, speed_multiplier: float) -> dict[str, Any]:
@@ -342,11 +369,25 @@ class SimulationManager:
                     else:
                         current_tick = state.source_ticks[state.index]
                         state.last_price = current_tick["price"]
-                        tick_to_insert = current_tick
+
+                        # Replay with deterministic wall-clock progression:
+                        # at 1x, emitted tick time increases by exactly 1 second.
+                        if state.replay_time is None:
+                            state.replay_time = current_tick["time"]
+                        else:
+                            state.replay_time = state.replay_time + timedelta(seconds=1)
+
+                        emitted_time = state.replay_time
+                        tick_to_insert = {
+                            "time": emitted_time,
+                            "symbol": current_tick["symbol"],
+                            "price": current_tick["price"],
+                            "volume": current_tick["volume"],
+                        }
                         tick_payload = {
                             "type": "tick",
                             "tick": {
-                                "time": current_tick["time"].isoformat(),
+                                "time": emitted_time.isoformat(),
                                 "symbol": current_tick["symbol"],
                                 "price": current_tick["price"],
                                 "volume": current_tick["volume"],
@@ -354,12 +395,10 @@ class SimulationManager:
                             "position": state.index + 1,
                             "total_ticks": len(state.source_ticks),
                         }
-                        
-                        # Calculate sleep duration based on time difference between ticks
-                        if state.index + 1 < len(state.source_ticks):
-                            next_tick = state.source_ticks[state.index + 1]
-                            time_diff = (next_tick["time"] - current_tick["time"]).total_seconds()
-                            sleep_duration = max(0.001, time_diff / state.speed_multiplier)  # Minimum 1ms to avoid spinning
+
+                        # Deterministic playback speed:
+                        # 1x => 1 second per tick, 2x => 0.5s, 0.5x => 2s.
+                        sleep_duration = max(0.001, 1.0 / max(0.1, state.speed_multiplier))
                         
                         state.index += 1
 
@@ -369,8 +408,10 @@ class SimulationManager:
 
                 if tick_to_insert is not None:
                     await self._insert_tick(tick_to_insert)
+                    logger.debug(f"Inserted tick for {state.symbol}: price={tick_to_insert['price']}")
 
                 if tick_payload is not None:
+                    logger.debug(f"Broadcasting tick for {state.symbol}: position={tick_payload.get('position')}/{tick_payload.get('total_ticks')}")
                     await self._broadcast(state, tick_payload)
 
                 if sleep_duration > 0:
